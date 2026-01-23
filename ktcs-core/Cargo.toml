@@ -1,0 +1,29 @@
+[package]
+name = "ktcs-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core library for Kaspa Thermodynamic Clock Service - proof format, Merkle trees, verification"
+
+[dependencies]
+# Cryptography
+sha2.workspace = true
+ripemd.workspace = true
+hex.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# Async (optional, for Kaspa client)
+tokio = { workspace = true, optional = true }
+
+[features]
+default = []
+kaspa-client = ["tokio"]
+wasm = []
+
+[dev-dependencies]
+tokio = { workspace = true }

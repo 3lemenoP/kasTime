@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "ktcs-core",
+    "ktcs-cli",
+    "ktcs-calendar",
+    "ktcs-wasm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["KTCS Contributors"]
+license = "MIT"
+repository = "https://github.com/example/ktcs"
+
+[workspace.dependencies]
+# Cryptography
+sha2 = "0.10"
+ripemd = "0.1"
+hex = "0.4"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Web server
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# WASM
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

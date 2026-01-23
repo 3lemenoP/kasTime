@@ -1,0 +1,35 @@
+[package]
+name = "ktcs-wasm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "WebAssembly bindings for KTCS - enables browser-based proof verification"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ktcs-core = { path = "../ktcs-core", default-features = false, features = ["wasm"] }
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+serde-wasm-bindgen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+
+# For console logging in WASM
+web-sys = { version = "0.3", features = ["console"] }
+
+# Crypto for WASM
+sha2 = "0.10"
+
+# Optional panic hook for better error messages
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[features]
+default = ["panic_hook"]
+panic_hook = ["console_error_panic_hook"]

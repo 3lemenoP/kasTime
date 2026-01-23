@@ -1,0 +1,28 @@
+[package]
+name = "ktcs-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Command-line interface for Kaspa Thermodynamic Clock Service"
+
+[[bin]]
+name = "ktcs"
+path = "src/main.rs"
+
+[dependencies]
+ktcs-core = { path = "../ktcs-core" }
+clap.workspace = true
+tokio.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# For HTTP requests to calendar
+reqwest = { version = "0.11", features = ["json"] }
+
+# For colored output
+colored = "2.0"
