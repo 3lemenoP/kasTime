@@ -1,5 +1,5 @@
 import { Outlet, NavLink } from 'react-router-dom'
-import { Clock, FileCheck, Activity } from 'lucide-react'
+import { Clock } from 'lucide-react'
 
 function Layout() {
   return (

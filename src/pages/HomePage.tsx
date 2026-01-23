@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Upload, ArrowRight, Shield, Zap, GitBranch } from 'lucide-react'
+import { ArrowRight, Shield, Zap, GitBranch } from 'lucide-react'
 import FileDropZone from '../components/ui/FileDropZone'
 import Button from '../components/ui/Button'
 import MetricCard from '../components/ui/MetricCard'

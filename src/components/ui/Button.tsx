@@ -7,7 +7,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ children, variant = 'primary', size = 'md', className = '', disabled, ...props }, ref) => {
+  ({ children, variant = 'primary', size = 'md', className = '', disabled, onClick, type = 'button' }, ref) => {
     const baseStyles = `
       inline-flex items-center justify-center font-medium tracking-wide uppercase
       transition-all duration-200 ease-out
@@ -41,10 +41,11 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     return (
       <motion.button
         ref={ref}
+        type={type}
         whileTap={{ scale: disabled ? 1 : 0.98 }}
         className={`${baseStyles} ${variants[variant]} ${sizes[size]} ${className}`}
         disabled={disabled}
-        {...props}
+        onClick={onClick}
       >
         {children}
       </motion.button>

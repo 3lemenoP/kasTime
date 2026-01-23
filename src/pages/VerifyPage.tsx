@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Upload, CheckCircle, XCircle } from 'lucide-react'
+import { CheckCircle } from 'lucide-react'
 import FileDropZone from '../components/ui/FileDropZone'
 import Button from '../components/ui/Button'
 

@@ -1,5 +1,4 @@
-import { Activity, Server, Clock, TrendingUp } from 'lucide-react'
-import MetricCard from '../components/ui/MetricCard'
+import { GitBranch } from 'lucide-react'
 
 function NetworkPage() {
   return (
@@ -148,8 +147,5 @@ function NetworkPage() {
     </div>
   )
 }
-
-// Import GitBranch for the placeholder
-import { GitBranch } from 'lucide-react'
 
 export default NetworkPage
