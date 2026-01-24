@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 /// A pending stamp waiting to be batched
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PendingStamp {
     pub id: String,
     pub digest: [u8; 32],
@@ -18,6 +19,7 @@ pub struct PendingStamp {
 
 /// Batch of stamps ready for commitment
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Batch {
     pub mode: BatchMode,
     pub stamps: Vec<PendingStamp>,
@@ -49,7 +51,7 @@ impl BatchManager {
             mode,
         };
 
-        let pending = self.pending.entry(mode).or_insert_with(Vec::new);
+        let pending = self.pending.entry(mode).or_default();
 
         // Start batch timer if this is the first stamp
         if pending.is_empty() {
@@ -83,11 +85,13 @@ impl BatchManager {
     }
 
     /// Get count of pending stamps
+    #[allow(dead_code)]
     pub fn pending_count(&self) -> usize {
         self.pending.values().map(|v| v.len()).sum()
     }
 
     /// Get count of pending stamps by mode
+    #[allow(dead_code)]
     pub fn pending_count_by_mode(&self, mode: BatchMode) -> usize {
         self.pending.get(&mode).map(|v| v.len()).unwrap_or(0)
     }

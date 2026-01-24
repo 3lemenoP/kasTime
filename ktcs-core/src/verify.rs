@@ -117,7 +117,7 @@ pub fn verify_proof(proof: &KtcsProof, original_data: Option<&[u8]>) -> Result<V
     let attestations: Vec<AttestationInfo> = proof
         .attestations
         .iter()
-        .map(|a| attestation_to_info(a))
+        .map(attestation_to_info)
         .collect();
 
     // Proof is valid if at least one attestation is complete
@@ -224,19 +224,114 @@ impl ThermodynamicMetrics {
     }
 }
 
-/// Verify that a commitment matches what's expected in an attestation
+/// KTCS commitment prefix for identifying commitments in transaction payloads
+pub const KTCS_COMMITMENT_PREFIX: &[u8] = b"KTCS";
+
+/// Verify that a commitment matches what's in a transaction payload.
 ///
-/// This is used to verify that the computed commitment from operations
-/// matches what was actually committed to the blockchain.
-pub fn verify_commitment_in_tx(
-    computed_commitment: &[u8],
-    _tx_payload: &[u8],
-) -> bool {
-    // In a real implementation, this would parse the Kaspa transaction
-    // and verify the commitment is in the payload field.
-    // For now, we assume the commitment matches (this would be verified
-    // by the Kaspa node during full verification).
-    computed_commitment.len() == 32
+/// This parses the transaction payload and verifies the commitment is present.
+/// KTCS commitments are expected to be prefixed with "KTCS" followed by the 32-byte commitment.
+///
+/// Returns true if the commitment is found in the payload.
+pub fn verify_commitment_in_tx(computed_commitment: &[u8], tx_payload: &[u8]) -> bool {
+    if computed_commitment.len() != 32 {
+        return false;
+    }
+
+    // Check for KTCS-prefixed commitment: "KTCS" + 32-byte commitment = 36 bytes
+    if tx_payload.len() >= 36
+        && tx_payload.starts_with(KTCS_COMMITMENT_PREFIX)
+        && &tx_payload[4..36] == computed_commitment
+    {
+        return true;
+    }
+
+    // Also check for bare commitment (just 32 bytes)
+    if tx_payload.len() >= 32 {
+        // Scan for the commitment anywhere in the payload
+        for window in tx_payload.windows(32) {
+            if window == computed_commitment {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Verify a Kaspa attestation against the computed commitment.
+///
+/// This performs the following checks:
+/// 1. Validates attestation structure
+/// 2. Verifies the commitment would be valid in the referenced transaction
+/// 3. Checks that attestation fields are within valid ranges
+pub fn verify_kaspa_attestation(
+    computed_commitment: &[u8; 32],
+    attestation: &KaspaAttestation,
+    tx_payload: Option<&[u8]>,
+) -> Result<bool> {
+    // Validate commitment length
+    if computed_commitment.len() != 32 {
+        return Ok(false);
+    }
+
+    // Validate attestation version
+    if attestation.version != 0x01 {
+        return Err(KtcsError::InvalidData(format!(
+            "Unknown attestation version: {}",
+            attestation.version
+        )));
+    }
+
+    // Validate block hash is not all zeros (would indicate invalid data)
+    if attestation.block_hash == [0u8; 32] {
+        return Err(KtcsError::InvalidData(
+            "Invalid block hash (all zeros)".to_string(),
+        ));
+    }
+
+    // Validate tx hash is not all zeros
+    if attestation.tx_hash == [0u8; 32] {
+        return Err(KtcsError::InvalidData(
+            "Invalid transaction hash (all zeros)".to_string(),
+        ));
+    }
+
+    // Validate DAA score is reasonable (greater than 0)
+    if attestation.daa_score == 0 {
+        return Err(KtcsError::InvalidData(
+            "Invalid DAA score (zero)".to_string(),
+        ));
+    }
+
+    // Validate timestamp is reasonable (after year 2020, before year 2100)
+    const MIN_TIMESTAMP: u64 = 1577836800000; // 2020-01-01 00:00:00 UTC in ms
+    const MAX_TIMESTAMP: u64 = 4102444800000; // 2100-01-01 00:00:00 UTC in ms
+    if attestation.timestamp < MIN_TIMESTAMP || attestation.timestamp > MAX_TIMESTAMP {
+        return Err(KtcsError::InvalidData(format!(
+            "Invalid timestamp: {} (out of valid range)",
+            attestation.timestamp
+        )));
+    }
+
+    // If transaction payload is provided, verify commitment is present
+    if let Some(payload) = tx_payload {
+        if !verify_commitment_in_tx(computed_commitment, payload) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+/// Compute the expected transaction payload for a given commitment.
+///
+/// This creates the standard KTCS payload format: "KTCS" + commitment
+pub fn create_commitment_payload(commitment: &[u8; 32]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(36);
+    payload.extend_from_slice(KTCS_COMMITMENT_PREFIX);
+    payload.extend_from_slice(commitment);
+    payload
 }
 
 #[cfg(test)]
@@ -363,5 +458,111 @@ mod tests {
         let result = verify_proof(&proof, None).unwrap();
         assert!(!result.valid);
         assert!(result.error.unwrap().contains("No attestations"));
+    }
+
+    #[test]
+    fn test_verify_commitment_in_tx_with_prefix() {
+        let commitment = [0xab; 32];
+        let mut payload = Vec::from(KTCS_COMMITMENT_PREFIX);
+        payload.extend_from_slice(&commitment);
+
+        assert!(verify_commitment_in_tx(&commitment, &payload));
+
+        // Wrong commitment should fail
+        let wrong_commitment = [0xcd; 32];
+        assert!(!verify_commitment_in_tx(&wrong_commitment, &payload));
+    }
+
+    #[test]
+    fn test_verify_commitment_in_tx_bare() {
+        let commitment = [0xab; 32];
+
+        // Bare commitment without prefix
+        assert!(verify_commitment_in_tx(&commitment, &commitment));
+
+        // Commitment embedded in larger payload
+        let mut payload = vec![0x00; 10];
+        payload.extend_from_slice(&commitment);
+        payload.extend_from_slice(&[0x00; 10]);
+        assert!(verify_commitment_in_tx(&commitment, &payload));
+    }
+
+    #[test]
+    fn test_verify_commitment_not_found() {
+        let commitment = [0xab; 32];
+        let payload = [0x00; 64]; // No matching commitment
+
+        assert!(!verify_commitment_in_tx(&commitment, &payload));
+    }
+
+    #[test]
+    fn test_verify_kaspa_attestation_valid() {
+        let commitment = [0xab; 32];
+        let attestation = KaspaAttestation::new(
+            42000000,
+            41500000,
+            [0xde; 32],
+            1706000000000, // Valid timestamp
+            [0xab; 32],
+            0,
+            [0x12; 32],
+            vec![[0x11; 32]],
+        );
+
+        let result = verify_kaspa_attestation(&commitment, &attestation, None).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn test_verify_kaspa_attestation_with_payload() {
+        let commitment = [0xab; 32];
+        let payload = create_commitment_payload(&commitment);
+        let attestation = KaspaAttestation::new(
+            42000000,
+            41500000,
+            [0xde; 32],
+            1706000000000,
+            [0xab; 32],
+            0,
+            [0x12; 32],
+            vec![],
+        );
+
+        let result = verify_kaspa_attestation(&commitment, &attestation, Some(&payload)).unwrap();
+        assert!(result);
+
+        // Wrong payload should fail
+        let wrong_payload = create_commitment_payload(&[0xcd; 32]);
+        let result =
+            verify_kaspa_attestation(&commitment, &attestation, Some(&wrong_payload)).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_verify_kaspa_attestation_invalid_block_hash() {
+        let commitment = [0xab; 32];
+        let attestation = KaspaAttestation::new(
+            42000000,
+            41500000,
+            [0x00; 32], // Invalid: all zeros
+            1706000000000,
+            [0xab; 32],
+            0,
+            [0x12; 32],
+            vec![],
+        );
+
+        let result = verify_kaspa_attestation(&commitment, &attestation, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_commitment_payload() {
+        let commitment = [0xab; 32];
+        let payload = create_commitment_payload(&commitment);
+
+        assert_eq!(payload.len(), 36);
+        assert!(payload.starts_with(KTCS_COMMITMENT_PREFIX));
+        assert_eq!(&payload[4..], &commitment);
     }
 }

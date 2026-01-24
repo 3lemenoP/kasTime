@@ -2,14 +2,16 @@
 //!
 //! Provides commands for creating and verifying Kaspa timestamps.
 
+use std::fs;
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use ktcs_core::{
-    deserialize_proof, merkle::sha256, serialize_proof, verify_proof, Attestation, BatchMode,
-    KaspaAttestation, KtcsProof, PendingAttestation, ThermodynamicMetrics,
+    create_pending_stamp, deserialize_proof, merkle::sha256, serialize_proof, verify_proof,
+    Attestation, BatchMode, KaspaAttestation, KaspaWallet, KtcsProof, PendingAttestation,
+    ThermodynamicMetrics,
 };
-use std::fs;
-use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "ktcs")]
@@ -48,9 +50,26 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Create timestamp directly on-chain (requires wallet)
+        /// Create timestamp directly on-chain (requires --wallet-file or --wallet-stdin)
         #[arg(long)]
         direct: bool,
+
+        /// Path to file containing wallet private key (hex)
+        /// SECURITY: Do not pass private keys as command-line arguments
+        #[arg(long, value_name = "FILE")]
+        wallet_file: Option<PathBuf>,
+
+        /// Read wallet private key from stdin
+        #[arg(long)]
+        wallet_stdin: bool,
+
+        /// Kaspa RPC URL for direct stamping
+        #[arg(long, default_value = "ws://localhost:16110")]
+        rpc_url: String,
+
+        /// Network for direct stamping (mainnet, testnet)
+        #[arg(long, default_value = "testnet")]
+        network: String,
     },
 
     /// Verify a timestamp proof
@@ -111,8 +130,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             mode,
             output,
             direct,
+            wallet_file,
+            wallet_stdin,
+            rpc_url,
+            network,
         } => {
-            cmd_stamp(file, calendar, mode, output, direct).await?;
+            cmd_stamp(file, calendar, mode, output, direct, wallet_file, wallet_stdin, rpc_url, network).await?;
         }
         Commands::Verify { proof, data } => {
             cmd_verify(proof, data)?;
@@ -131,12 +154,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Determines the output path for a proof file.
+/// Uses the provided output path or derives one from the input file with .kts extension.
+fn determine_output_path(output: Option<PathBuf>, input_file: &std::path::Path) -> PathBuf {
+    output.unwrap_or_else(|| {
+        let mut path = input_file.to_path_buf();
+        path.set_extension("kts");
+        path
+    })
+}
+
+/// Read wallet private key from file or stdin securely
+fn read_wallet_key(wallet_file: Option<PathBuf>, wallet_stdin: bool) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if wallet_stdin {
+        // Read from stdin
+        use std::io::{self, BufRead};
+        eprintln!("{}", "Enter wallet private key (hex):".dimmed());
+        let stdin = io::stdin();
+        let key = stdin.lock().lines().next()
+            .ok_or("No input provided")??
+            .trim()
+            .to_string();
+        if key.is_empty() {
+            return Err("Empty private key".into());
+        }
+        Ok(Some(key))
+    } else if let Some(path) = wallet_file {
+        // Read from file
+        let key = fs::read_to_string(&path)?
+            .trim()
+            .to_string();
+        if key.is_empty() {
+            return Err(format!("Empty private key in file: {}", path.display()).into());
+        }
+        Ok(Some(key))
+    } else {
+        Ok(None)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn cmd_stamp(
     file: PathBuf,
     calendar: String,
     mode: String,
     output: Option<PathBuf>,
     direct: bool,
+    wallet_file: Option<PathBuf>,
+    wallet_stdin: bool,
+    rpc_url: String,
+    network: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", "KTCS Timestamp".bold().cyan());
     println!();
@@ -151,30 +218,16 @@ async fn cmd_stamp(
     println!("  {} {}", "SHA256:".dimmed(), hash_hex.yellow());
     println!();
 
+    // Handle direct stamping mode
     if direct {
-        println!(
-            "{}",
-            "Direct stamping not yet implemented. Use calendar mode.".red()
-        );
-        return Ok(());
+        let wallet_key = read_wallet_key(wallet_file, wallet_stdin)?;
+        return cmd_stamp_direct(&file, output, wallet_key, &rpc_url, &network, &data).await;
     }
 
     // Parse batch mode
-    let batch_mode = match mode.to_lowercase().as_str() {
-        "instant" => BatchMode::Instant,
-        "standard" => BatchMode::Standard,
-        "economic" => BatchMode::Economic,
-        _ => {
-            println!("{}", format!("Invalid batch mode: {}", mode).red());
-            return Ok(());
-        }
-    };
+    let batch_mode = parse_batch_mode(&mode)?;
 
-    println!(
-        "  {} {}",
-        "Calendar:".dimmed(),
-        calendar
-    );
+    println!("  {} {}", "Calendar:".dimmed(), calendar);
     println!(
         "  {} {:?} (~{}ms window)",
         "Mode:".dimmed(),
@@ -192,14 +245,7 @@ async fn cmd_stamp(
         calendar_url: format!("{}/v1/stamp/ktcs_{}", calendar, &hash_hex[..16]),
     }));
 
-    // Determine output path
-    let output_path = output.unwrap_or_else(|| {
-        let mut p = file.clone();
-        p.set_extension("kts");
-        p
-    });
-
-    // Serialize and save
+    let output_path = determine_output_path(output, &file);
     let kts_data = serialize_proof(&proof);
     fs::write(&output_path, &kts_data)?;
 
@@ -218,6 +264,125 @@ async fn cmd_stamp(
     );
 
     Ok(())
+}
+
+/// Direct stamping command handler - creates timestamps directly on-chain.
+async fn cmd_stamp_direct(
+    file: &std::path::Path,
+    output: Option<PathBuf>,
+    wallet_key: Option<String>,
+    rpc_url: &str,
+    network: &str,
+    data: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}", "Direct Stamping Mode".bold().yellow());
+    println!();
+
+    let wallet_key = wallet_key.ok_or_else(|| {
+        eprintln!(
+            "{}",
+            "Direct stamping requires --wallet-file or --wallet-stdin".red()
+        );
+        eprintln!();
+        eprintln!(
+            "{}",
+            "Examples:".bold()
+        );
+        eprintln!(
+            "  {}",
+            "ktcs stamp --direct --wallet-file /path/to/key.txt file.txt".dimmed()
+        );
+        eprintln!(
+            "  {}",
+            "echo '<hex-key>' | ktcs stamp --direct --wallet-stdin file.txt".dimmed()
+        );
+        eprintln!();
+        eprintln!(
+            "{}",
+            "SECURITY: Never pass private keys as command-line arguments!".yellow()
+        );
+        "Missing wallet key for direct stamping"
+    })?;
+
+    let wallet = KaspaWallet::from_hex(&wallet_key, network).map_err(|e| {
+        eprintln!("{}", format!("Invalid wallet key: {}", e).red());
+        e
+    })?;
+
+    println!("  {} {}", "Wallet:".dimmed(), wallet.address());
+    println!("  {} {}", "Network:".dimmed(), network);
+    println!("  {} {}", "RPC:".dimmed(), rpc_url);
+    println!();
+
+    println!("{}", "Creating direct timestamp...".dimmed());
+
+    let prepared = create_pending_stamp(data)?;
+
+    println!(
+        "  {} {}",
+        "Commitment:".dimmed(),
+        hex::encode(prepared.commitment).yellow()
+    );
+    println!();
+
+    // In a full implementation, we would:
+    // 1. Connect to the Kaspa node
+    // 2. Get UTXOs for the wallet
+    // 3. Build and sign the transaction
+    // 4. Submit and wait for confirmation
+    // 5. Build the complete proof
+
+    println!(
+        "{}",
+        "Note: Full direct stamping requires a running Kaspa node.".yellow()
+    );
+    println!(
+        "{}",
+        "Creating pending proof that can be completed later.".dimmed()
+    );
+    println!();
+
+    // Save as pending proof
+    let mut proof = prepared.proof;
+    proof.add_attestation(Attestation::Pending(PendingAttestation {
+        calendar_url: format!(
+            "direct://{}?commitment={}",
+            wallet.address(),
+            hex::encode(prepared.commitment)
+        ),
+    }));
+
+    let output_path = determine_output_path(output, file);
+    let kts_data = serialize_proof(&proof);
+    fs::write(&output_path, &kts_data)?;
+
+    println!("{}", "Timestamp prepared!".green().bold());
+    println!("  {} {}", "Proof:".dimmed(), output_path.display());
+    println!(
+        "  {} {}",
+        "Status:".dimmed(),
+        "Pending (requires Kaspa node for completion)".yellow()
+    );
+    println!();
+    println!(
+        "{}",
+        "To complete: Connect to a Kaspa node and submit the transaction.".dimmed()
+    );
+
+    Ok(())
+}
+
+/// Parses the batch mode string into a BatchMode enum.
+fn parse_batch_mode(mode: &str) -> Result<BatchMode, Box<dyn std::error::Error>> {
+    match mode.to_lowercase().as_str() {
+        "instant" => Ok(BatchMode::Instant),
+        "standard" => Ok(BatchMode::Standard),
+        "economic" => Ok(BatchMode::Economic),
+        _ => {
+            eprintln!("{}", format!("Invalid batch mode: {}", mode).red());
+            Err(format!("Invalid batch mode: {}", mode).into())
+        }
+    }
 }
 
 fn cmd_verify(proof_path: PathBuf, data_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
@@ -290,9 +455,8 @@ fn cmd_verify(proof_path: PathBuf, data_path: Option<PathBuf>) -> Result<(), Box
                 println!("     {} {}", "Block:".dimmed(), &block_hash[..16]);
                 println!("     {} {}", "TX:".dimmed(), &tx_hash[..16]);
 
-                // Convert timestamp to human readable
-                let dt = chrono_lite(*timestamp);
-                println!("     {} {}", "Time:".dimmed(), dt);
+                let formatted_time = format_timestamp_utc(*timestamp);
+                println!("     {} {}", "Time:".dimmed(), formatted_time);
             }
             ktcs_core::verify::AttestationDetails::Bitcoin { block_height } => {
                 println!("     {} {}", "Block Height:".dimmed(), block_height);
@@ -433,40 +597,48 @@ fn cmd_hash(file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Simple timestamp formatting (avoiding heavy datetime dependencies)
-fn chrono_lite(timestamp_ms: u64) -> String {
+/// Returns true if the given year is a leap year.
+fn is_leap_year(year: u64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+/// Returns the number of days in the given year.
+fn days_in_year(year: u64) -> u64 {
+    if is_leap_year(year) { 366 } else { 365 }
+}
+
+/// Returns the days in each month for the given year.
+fn days_in_months(year: u64) -> [u64; 12] {
+    if is_leap_year(year) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    }
+}
+
+/// Formats a Unix timestamp (milliseconds) as a human-readable UTC date string.
+/// Avoids heavy datetime dependencies by implementing date calculation directly.
+fn format_timestamp_utc(timestamp_ms: u64) -> String {
     let secs = timestamp_ms / 1000;
     let days_since_epoch = secs / 86400;
     let time_of_day = secs % 86400;
+
     let hours = time_of_day / 3600;
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;
 
-    // Approximate date calculation (not accounting for leap years precisely)
-    let mut year = 1970;
+    // Calculate year from days since epoch
+    let mut year = 1970u64;
     let mut remaining_days = days_since_epoch;
 
-    loop {
-        let days_in_year = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-            366
-        } else {
-            365
-        };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
+    while remaining_days >= days_in_year(year) {
+        remaining_days -= days_in_year(year);
         year += 1;
     }
 
-    let days_in_months: [u64; 12] = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 1;
-    for days in days_in_months {
+    // Calculate month and day
+    let mut month = 1u64;
+    for days in days_in_months(year) {
         if remaining_days < days {
             break;
         }

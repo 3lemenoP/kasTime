@@ -17,8 +17,14 @@ repository = "https://github.com/example/ktcs"
 [workspace.dependencies]
 # Cryptography
 sha2 = "0.10"
+sha3 = "0.10"
 ripemd = "0.1"
 hex = "0.4"
+secp256k1 = { version = "0.29", features = ["rand-std", "global-context"] }
+getrandom = { version = "0.2", features = ["std"] }
+zeroize = { version = "1.7", features = ["derive"] }
+bech32 = "0.11"
+rand = "0.8"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -32,8 +38,9 @@ tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 
 # Web server
-axum = "0.7"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+axum = { version = "0.7", features = ["ws"] }
+tower = { version = "0.4", features = ["util", "timeout"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "limit", "request-id"] }
 
 # WASM
 wasm-bindgen = "0.2"

@@ -1,33 +1,119 @@
 import { useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ArrowRight, Shield, Zap, GitBranch } from 'lucide-react'
+
 import FileDropZone from '../components/ui/FileDropZone'
 import Button from '../components/ui/Button'
 import MetricCard from '../components/ui/MetricCard'
+import { computeSha256Hex, isWasmInitialized } from '../lib/wasm'
+import { useStampStore } from '../stores/stamp'
+import { createCalendarClient } from '../api/calendar'
+import type { BatchMode } from '../types/proof'
 
-function HomePage() {
+const CALENDAR_URL = import.meta.env.VITE_CALENDAR_URL || 'http://localhost:3001'
+
+const BATCH_MODE_CONFIG: Record<BatchMode, { timing: string; description: string }> = {
+  instant: {
+    timing: '~100ms',
+    description: 'Fastest confirmation, higher cost per stamp',
+  },
+  standard: {
+    timing: '~1s',
+    description: 'Balanced speed and cost (recommended)',
+  },
+  economic: {
+    timing: '~10s',
+    description: 'Lowest cost, batched with other stamps',
+  },
+}
+
+const BATCH_MODES: BatchMode[] = ['instant', 'standard', 'economic']
+
+interface BatchModeButtonProps {
+  mode: BatchMode
+  isSelected: boolean
+  onClick: () => void
+}
+
+function BatchModeButton({ mode, isSelected, onClick }: BatchModeButtonProps): JSX.Element {
+  const { timing } = BATCH_MODE_CONFIG[mode]
+  const baseClasses = 'px-3 py-1.5 rounded text-sm font-medium transition-colors'
+  const selectedClasses = 'bg-[var(--accent-primary)] text-black'
+  const unselectedClasses = 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+
+  return (
+    <button
+      onClick={onClick}
+      className={`${baseClasses} ${isSelected ? selectedClasses : unselectedClasses}`}
+    >
+      {mode.toUpperCase()}
+      <span className="text-xs ml-1 opacity-70">({timing})</span>
+    </button>
+  )
+}
+
+function HomePage(): JSX.Element {
+  const navigate = useNavigate()
   const [hash, setHash] = useState('')
   const [isHashing, setIsHashing] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const { setFile, setHash: setStoreHash, setStampResponse, setError: setStoreError, batchMode, setBatchMode } = useStampStore()
 
   const handleFileDrop = useCallback(async (file: File) => {
     setIsHashing(true)
+    setError(null)
     try {
-      // Compute SHA-256 hash of file
       const buffer = await file.arrayBuffer()
-      const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
-      const hashArray = Array.from(new Uint8Array(hashBuffer))
-      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+      const data = new Uint8Array(buffer)
+
+      // Use WASM module for hashing if available, fallback to Web Crypto
+      let hashHex: string
+      if (isWasmInitialized()) {
+        hashHex = computeSha256Hex(data)
+        console.log('Hash computed using KTCS WASM module')
+      } else {
+        // Fallback to Web Crypto API
+        const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
+        const hashArray = Array.from(new Uint8Array(hashBuffer))
+        hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+        console.log('Hash computed using Web Crypto API (WASM not ready)')
+      }
+
       setHash(hashHex)
-    } catch (error) {
-      console.error('Error hashing file:', error)
+      setFile(file)
+      setStoreHash(hashHex)
+    } catch (err) {
+      console.error('Error hashing file:', err)
+      setError('Failed to hash file')
     } finally {
       setIsHashing(false)
     }
-  }, [])
+  }, [setFile, setStoreHash])
 
-  const handleStamp = () => {
+  const handleStamp = async () => {
     if (!hash) return
-    // TODO: Implement stamping logic
-    console.log('Stamping hash:', hash)
+
+    setIsSubmitting(true)
+    setError(null)
+
+    try {
+      const client = createCalendarClient(CALENDAR_URL)
+      const response = await client.stamp(hash, batchMode)
+
+      setStampResponse(response)
+
+      // Navigate to the proof page
+      navigate(`/proof/${response.id}`)
+    } catch (err) {
+      console.error('Error submitting stamp:', err)
+      const errorMsg = err instanceof Error ? err.message : 'Failed to submit timestamp'
+      setError(errorMsg)
+      setStoreError(errorMsg)
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   return (
@@ -63,14 +149,38 @@ function HomePage() {
                 className="w-full bg-[var(--bg-quaternary)] border border-[var(--border-default)] rounded px-4 py-3 pl-10 font-data text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:border-[var(--accent-primary)] focus:outline-none transition-colors"
               />
             </div>
-            <Button onClick={handleStamp} disabled={!hash}>
-              STAMP
-              <ArrowRight className="w-4 h-4 ml-2" />
+            <Button onClick={handleStamp} disabled={!hash || isSubmitting}>
+              {isSubmitting ? 'SUBMITTING...' : 'STAMP'}
+              {!isSubmitting && <ArrowRight className="w-4 h-4 ml-2" />}
             </Button>
           </div>
           <p className="text-xs text-[var(--text-tertiary)] mt-2">
             File never leaves your device. Hash computed locally in browser.
           </p>
+
+          {/* Batch Mode Selector */}
+          <div className="mt-4 pt-4 border-t border-[var(--border-subtle)]">
+            <label className="text-label block mb-2">BATCH MODE</label>
+            <div className="flex gap-2">
+              {BATCH_MODES.map((mode) => (
+                <BatchModeButton
+                  key={mode}
+                  mode={mode}
+                  isSelected={batchMode === mode}
+                  onClick={() => setBatchMode(mode)}
+                />
+              ))}
+            </div>
+            <p className="text-xs text-[var(--text-tertiary)] mt-1">
+              {BATCH_MODE_CONFIG[batchMode].description}
+            </p>
+          </div>
+
+          {error && (
+            <p className="text-xs text-red-500 mt-2">
+              {error}
+            </p>
+          )}
         </div>
       </div>
 

@@ -1,0 +1,627 @@
+//! Transaction building utilities for KTCS
+//!
+//! This module provides utilities for building Kaspa transactions
+//! that contain OP_RETURN commitments for timestamping.
+//!
+//! # Transaction Structure
+//!
+//! A typical KTCS commitment transaction has:
+//! - One or more inputs (UTXOs from the calendar wallet)
+//! - Output 0: OP_RETURN with 32-byte commitment (Merkle root or direct hash)
+//! - Output 1: Change back to the calendar address
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use ktcs_core::tx::{TransactionBuilder, CommitmentTransaction};
+//!
+//! let commitment = [0xab; 32]; // Merkle root
+//! let tx = TransactionBuilder::new()
+//!     .commitment(&commitment)
+//!     .add_input(utxo)
+//!     .change_address("kaspa:qz...")
+//!     .fee_per_gram(1)
+//!     .build()?;
+//! ```
+
+use crate::error::{KtcsError, Result};
+use crate::kaspa::{
+    build_op_return_output, ScriptPublicKey, Transaction, TransactionInput, TransactionOutput,
+    Utxo,
+};
+use crate::merkle::sha256;
+
+/// Minimum fee rate in sompi per gram (mass unit)
+pub const MIN_FEE_PER_GRAM: u64 = 1;
+
+/// Default fee rate in sompi per gram
+pub const DEFAULT_FEE_PER_GRAM: u64 = 1;
+
+/// Dust threshold - outputs below this are rejected
+pub const DUST_THRESHOLD: u64 = 546;
+
+/// Maximum OP_RETURN data size in bytes
+pub const MAX_OP_RETURN_SIZE: usize = 80;
+
+/// KTCS magic prefix for identifying our OP_RETURN outputs (optional)
+pub const KTCS_MAGIC_PREFIX: &[u8; 4] = b"KTCS";
+
+/// A commitment transaction ready for signing
+#[derive(Debug, Clone)]
+pub struct CommitmentTransaction {
+    /// The unsigned transaction
+    pub transaction: Transaction,
+    /// The commitment being anchored
+    pub commitment: [u8; 32],
+    /// Total input amount in sompi
+    pub total_input: u64,
+    /// Total output amount in sompi
+    pub total_output: u64,
+    /// Fee in sompi
+    pub fee: u64,
+    /// Change amount in sompi
+    pub change_amount: u64,
+}
+
+impl CommitmentTransaction {
+    /// Get the transaction hash (for unsigned transaction)
+    ///
+    /// Note: The actual transaction ID will differ after signing.
+    pub fn unsigned_hash(&self) -> [u8; 32] {
+        // Simplified: hash the commitment and inputs
+        // In practice, this would serialize and hash the transaction
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.commitment);
+        for input in &self.transaction.inputs {
+            data.extend_from_slice(&input.previous_outpoint_hash);
+            data.extend_from_slice(&input.previous_outpoint_index.to_le_bytes());
+        }
+        sha256(&data)
+    }
+}
+
+/// Builder for creating commitment transactions
+#[derive(Debug, Clone)]
+pub struct TransactionBuilder {
+    commitment: Option<[u8; 32]>,
+    inputs: Vec<(Utxo, Vec<u8>)>, // UTXO and signature script (empty until signed)
+    change_address: Option<String>,
+    change_script: Option<ScriptPublicKey>,
+    fee_per_gram: u64,
+    include_ktcs_magic: bool,
+}
+
+impl TransactionBuilder {
+    /// Create a new transaction builder
+    pub fn new() -> Self {
+        Self {
+            commitment: None,
+            inputs: Vec::new(),
+            change_address: None,
+            change_script: None,
+            fee_per_gram: DEFAULT_FEE_PER_GRAM,
+            include_ktcs_magic: false,
+        }
+    }
+
+    /// Set the 32-byte commitment (Merkle root or hash)
+    pub fn commitment(mut self, commitment: &[u8; 32]) -> Self {
+        self.commitment = Some(*commitment);
+        self
+    }
+
+    /// Add a UTXO input
+    pub fn add_input(mut self, utxo: Utxo) -> Self {
+        self.inputs.push((utxo, Vec::new()));
+        self
+    }
+
+    /// Add multiple UTXO inputs
+    pub fn add_inputs(mut self, utxos: impl IntoIterator<Item = Utxo>) -> Self {
+        for utxo in utxos {
+            self.inputs.push((utxo, Vec::new()));
+        }
+        self
+    }
+
+    /// Set the change address (Kaspa address format)
+    pub fn change_address(mut self, address: &str) -> Self {
+        self.change_address = Some(address.to_string());
+        self
+    }
+
+    /// Set the change script directly
+    pub fn change_script(mut self, script: ScriptPublicKey) -> Self {
+        self.change_script = Some(script);
+        self
+    }
+
+    /// Set the fee rate in sompi per gram (mass unit)
+    pub fn fee_per_gram(mut self, fee: u64) -> Self {
+        self.fee_per_gram = fee.max(MIN_FEE_PER_GRAM);
+        self
+    }
+
+    /// Include the KTCS magic prefix in the OP_RETURN
+    ///
+    /// When enabled, the OP_RETURN will contain "KTCS" + commitment
+    /// instead of just the commitment. This makes KTCS transactions
+    /// easily identifiable but uses 4 more bytes.
+    pub fn include_magic(mut self, include: bool) -> Self {
+        self.include_ktcs_magic = include;
+        self
+    }
+
+    /// Build the unsigned commitment transaction
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No commitment is set
+    /// - No inputs are provided
+    /// - No change address/script is provided
+    /// - Insufficient funds for fee
+    pub fn build(self) -> Result<CommitmentTransaction> {
+        // Validate inputs
+        let commitment = self.commitment.ok_or_else(|| {
+            KtcsError::Other("Commitment not set".to_string())
+        })?;
+
+        if self.inputs.is_empty() {
+            return Err(KtcsError::Other("No inputs provided".to_string()));
+        }
+
+        let change_script = if let Some(script) = self.change_script {
+            script
+        } else if let Some(address) = &self.change_address {
+            address_to_script(address)?
+        } else {
+            return Err(KtcsError::Other("No change address or script provided".to_string()));
+        };
+
+        // Calculate total input
+        let total_input: u64 = self.inputs.iter().map(|(u, _)| u.amount).sum();
+
+        // Build transaction
+        let mut tx = Transaction::new();
+
+        // Add inputs
+        for (utxo, sig_script) in &self.inputs {
+            tx.add_input(TransactionInput {
+                previous_outpoint_hash: utxo.transaction_id,
+                previous_outpoint_index: utxo.index,
+                signature_script: sig_script.clone(),
+            });
+        }
+
+        // Build OP_RETURN output
+        let op_return_output = if self.include_ktcs_magic {
+            build_op_return_with_magic(&commitment)
+        } else {
+            build_op_return_output(&commitment)
+        };
+
+        // Calculate transaction mass (for fee calculation)
+        // Kaspa uses "mass" instead of "size" for fee calculation
+        let estimated_mass = estimate_transaction_mass(
+            self.inputs.len(),
+            2, // OP_RETURN + change
+            self.include_ktcs_magic,
+        );
+
+        let fee = estimated_mass * self.fee_per_gram;
+
+        // Calculate change
+        if total_input < fee {
+            return Err(KtcsError::Other(format!(
+                "Insufficient funds: have {} sompi, need {} sompi for fee",
+                total_input, fee
+            )));
+        }
+
+        let change_amount = total_input - fee;
+
+        // Check dust threshold
+        if change_amount > 0 && change_amount < DUST_THRESHOLD {
+            return Err(KtcsError::Other(format!(
+                "Change amount {} is below dust threshold {}",
+                change_amount, DUST_THRESHOLD
+            )));
+        }
+
+        // Add outputs
+        tx.add_output(op_return_output);
+
+        if change_amount > 0 {
+            tx.add_output(TransactionOutput {
+                amount: change_amount,
+                script_public_key: change_script,
+            });
+        }
+
+        let total_output = change_amount; // OP_RETURN has 0 value
+
+        Ok(CommitmentTransaction {
+            transaction: tx,
+            commitment,
+            total_input,
+            total_output,
+            fee,
+            change_amount,
+        })
+    }
+}
+
+impl Default for TransactionBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Estimate transaction mass for fee calculation
+///
+/// Kaspa uses "mass" as a measure of transaction resource consumption.
+/// Mass is roughly: base_mass + input_mass * num_inputs + output_mass * num_outputs
+fn estimate_transaction_mass(num_inputs: usize, num_outputs: usize, with_magic: bool) -> u64 {
+    // Approximate mass values (these should match Kaspa consensus rules)
+    const BASE_MASS: u64 = 10;
+    const INPUT_MASS: u64 = 148; // Typical P2PKH input
+    const OUTPUT_MASS: u64 = 34; // Typical P2PKH output
+    const OP_RETURN_BASE_MASS: u64 = 10;
+    const OP_RETURN_DATA_MASS_PER_BYTE: u64 = 1;
+
+    let input_total = INPUT_MASS * num_inputs as u64;
+    let output_total = OUTPUT_MASS * (num_outputs - 1) as u64; // Exclude OP_RETURN
+
+    let op_return_data_size = if with_magic { 36 } else { 32 }; // 32 bytes + optional 4-byte magic
+    let op_return_mass = OP_RETURN_BASE_MASS + OP_RETURN_DATA_MASS_PER_BYTE * op_return_data_size;
+
+    BASE_MASS + input_total + output_total + op_return_mass
+}
+
+/// Build an OP_RETURN output with KTCS magic prefix
+fn build_op_return_with_magic(commitment: &[u8; 32]) -> TransactionOutput {
+    // Script: OP_RETURN <push 36 bytes> "KTCS" <32-byte commitment>
+    let mut script = Vec::with_capacity(38);
+    script.push(0x6a); // OP_RETURN
+    script.push(0x24); // Push 36 bytes (4 + 32)
+    script.extend_from_slice(KTCS_MAGIC_PREFIX);
+    script.extend_from_slice(commitment);
+
+    TransactionOutput {
+        amount: 0,
+        script_public_key: ScriptPublicKey {
+            version: 0,
+            script,
+        },
+    }
+}
+
+/// Convert a Kaspa address to a script public key
+///
+/// # Kaspa Address Format
+///
+/// Kaspa addresses use Bech32m encoding with:
+/// - Version byte: 0x00 for Schnorr (32-byte pubkey), 0x08 for ECDSA (33-byte pubkey)
+/// - Mainnet prefix: `kaspa`
+/// - Testnet prefix: `kaspatest`
+///
+/// # Errors
+///
+/// Returns an error if the address format is invalid.
+pub fn address_to_script(address: &str) -> Result<ScriptPublicKey> {
+    use crate::wallet::decode_address;
+
+    // Decode the bech32m address
+    let (_hrp, pubkey_data) = decode_address(address)?;
+
+    // Build script based on address type
+    // Kaspa uses a simplified script format for Schnorr addresses
+    if pubkey_data.len() == 32 {
+        // Schnorr address - 32-byte x-only public key
+        // Script: version 0, direct pubkey (Kaspa uses simplified script)
+        let mut script = Vec::with_capacity(35);
+        script.push(0x20); // Push 32 bytes
+        script.extend_from_slice(&pubkey_data);
+        script.push(0xac); // OP_CHECKSIG
+
+        Ok(ScriptPublicKey {
+            version: 0,
+            script,
+        })
+    } else if pubkey_data.len() == 33 {
+        // ECDSA address - 33-byte compressed public key
+        let mut script = Vec::with_capacity(36);
+        script.push(0x21); // Push 33 bytes
+        script.extend_from_slice(&pubkey_data);
+        script.push(0xac); // OP_CHECKSIG
+
+        Ok(ScriptPublicKey {
+            version: 0,
+            script,
+        })
+    } else {
+        Err(KtcsError::InvalidData(format!(
+            "Unexpected pubkey length: {} bytes",
+            pubkey_data.len()
+        )))
+    }
+}
+
+/// Select UTXOs to cover the required amount plus fee
+///
+/// Uses a simple "largest first" selection algorithm.
+/// Returns the selected UTXOs and total selected amount.
+///
+/// # Arguments
+///
+/// * `available` - Available UTXOs to select from
+/// * `target_amount` - Target amount to cover (excluding fee)
+/// * `fee_per_gram` - Fee rate in sompi per gram
+///
+/// # Returns
+///
+/// Tuple of (selected UTXOs, total amount)
+///
+/// # Errors
+///
+/// Returns an error if insufficient funds.
+pub fn select_utxos(
+    available: &[Utxo],
+    target_amount: u64,
+    fee_per_gram: u64,
+) -> Result<(Vec<Utxo>, u64)> {
+    if available.is_empty() {
+        return Err(KtcsError::Other("No UTXOs available".to_string()));
+    }
+
+    // Sort by amount descending
+    let mut sorted: Vec<_> = available.iter().collect();
+    sorted.sort_by(|a, b| b.amount.cmp(&a.amount));
+
+    let mut selected = Vec::new();
+    let mut total = 0u64;
+
+    for utxo in sorted {
+        selected.push(utxo.clone());
+        total += utxo.amount;
+
+        // Estimate fee with current selection
+        let estimated_mass = estimate_transaction_mass(selected.len(), 2, false);
+        let estimated_fee = estimated_mass * fee_per_gram;
+
+        if total >= target_amount + estimated_fee {
+            return Ok((selected, total));
+        }
+    }
+
+    // Calculate what we needed
+    let final_mass = estimate_transaction_mass(selected.len(), 2, false);
+    let final_fee = final_mass * fee_per_gram;
+    let needed = target_amount + final_fee;
+
+    Err(KtcsError::Other(format!(
+        "Insufficient funds: have {} sompi, need {} sompi",
+        total, needed
+    )))
+}
+
+/// Create a commitment from a nonce and data hash
+///
+/// commitment = SHA256(nonce || data_hash)
+///
+/// This provides privacy - the calendar only sees the commitment,
+/// not the original data hash.
+pub fn create_commitment(nonce: &[u8], data_hash: &[u8; 32]) -> [u8; 32] {
+    let mut data = Vec::with_capacity(nonce.len() + 32);
+    data.extend_from_slice(nonce);
+    data.extend_from_slice(data_hash);
+    sha256(&data)
+}
+
+/// Generate a cryptographically secure random nonce for commitment creation
+///
+/// Uses the system's CSPRNG via getrandom.
+#[cfg(feature = "keygen")]
+pub fn generate_nonce() -> Result<[u8; 16]> {
+    let mut nonce = [0u8; 16];
+    getrandom::getrandom(&mut nonce)
+        .map_err(|e| KtcsError::Other(format!("Failed to generate random nonce: {}", e)))?;
+    Ok(nonce)
+}
+
+/// Generate a random nonce (fallback for non-keygen builds)
+#[cfg(all(feature = "kaspa-client", not(feature = "keygen")))]
+pub fn generate_nonce() -> Result<[u8; 16]> {
+    Err(KtcsError::Other(
+        "Secure nonce generation requires 'keygen' feature".to_string(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_utxo(amount: u64, index: u32) -> Utxo {
+        Utxo {
+            transaction_id: [index as u8; 32],
+            index,
+            amount,
+            script_public_key: ScriptPublicKey {
+                version: 0,
+                script: vec![0x76, 0xa9, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0xac],
+            },
+            block_daa_score: 1000,
+            is_coinbase: false,
+        }
+    }
+
+    #[test]
+    fn test_transaction_builder() {
+        let commitment = [0xab; 32];
+        let utxo = create_test_utxo(100_000_000, 0); // 1 KAS
+
+        let result = TransactionBuilder::new()
+            .commitment(&commitment)
+            .add_input(utxo)
+            .change_address("kaspa:qztest123")
+            .fee_per_gram(1)
+            .build();
+
+        assert!(result.is_ok());
+        let tx = result.unwrap();
+        assert_eq!(tx.commitment, commitment);
+        assert!(tx.change_amount > 0);
+        assert!(tx.fee > 0);
+    }
+
+    #[test]
+    fn test_transaction_builder_no_commitment() {
+        let utxo = create_test_utxo(100_000_000, 0);
+
+        let result = TransactionBuilder::new()
+            .add_input(utxo)
+            .change_address("kaspa:qztest123")
+            .build();
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Commitment"));
+    }
+
+    #[test]
+    fn test_transaction_builder_no_inputs() {
+        let commitment = [0xab; 32];
+
+        let result = TransactionBuilder::new()
+            .commitment(&commitment)
+            .change_address("kaspa:qztest123")
+            .build();
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("inputs"));
+    }
+
+    #[test]
+    fn test_transaction_builder_insufficient_funds() {
+        let commitment = [0xab; 32];
+        let utxo = create_test_utxo(100, 0); // Very small amount
+
+        let result = TransactionBuilder::new()
+            .commitment(&commitment)
+            .add_input(utxo)
+            .change_address("kaspa:qztest123")
+            .fee_per_gram(1000) // High fee rate
+            .build();
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Insufficient"));
+    }
+
+    #[test]
+    fn test_op_return_with_magic() {
+        let commitment = [0xcd; 32];
+        let output = build_op_return_with_magic(&commitment);
+
+        assert_eq!(output.amount, 0);
+        assert!(output.script_public_key.is_op_return());
+
+        let script = &output.script_public_key.script;
+        assert_eq!(script[0], 0x6a); // OP_RETURN
+        assert_eq!(script[1], 0x24); // Push 36 bytes
+        assert_eq!(&script[2..6], b"KTCS");
+        assert_eq!(&script[6..38], &commitment[..]);
+    }
+
+    #[test]
+    fn test_select_utxos() {
+        let utxos = vec![
+            create_test_utxo(1_000_000, 0),
+            create_test_utxo(5_000_000, 1),
+            create_test_utxo(2_000_000, 2),
+        ];
+
+        // Should select the largest first
+        let result = select_utxos(&utxos, 4_000_000, 1);
+        assert!(result.is_ok());
+        let (selected, total) = result.unwrap();
+        assert!(total >= 4_000_000);
+        // Should have selected the 5M UTXO first
+        assert_eq!(selected[0].amount, 5_000_000);
+    }
+
+    #[test]
+    fn test_select_utxos_insufficient() {
+        let utxos = vec![
+            create_test_utxo(1_000, 0),
+        ];
+
+        let result = select_utxos(&utxos, 1_000_000, 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_commitment() {
+        let nonce = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let data_hash = [0xab; 32];
+
+        let commitment = create_commitment(&nonce, &data_hash);
+
+        // Should be deterministic
+        let commitment2 = create_commitment(&nonce, &data_hash);
+        assert_eq!(commitment, commitment2);
+
+        // Different nonce = different commitment
+        let different_nonce = [0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10];
+        let commitment3 = create_commitment(&different_nonce, &data_hash);
+        assert_ne!(commitment, commitment3);
+    }
+
+    #[test]
+    fn test_address_to_script() {
+        // P2PKH address
+        let result = address_to_script("kaspa:qztest123");
+        assert!(result.is_ok());
+        let script = result.unwrap();
+        assert_eq!(script.script[0], 0x76); // OP_DUP
+
+        // P2SH address
+        let result = address_to_script("kaspa:pztest456");
+        assert!(result.is_ok());
+        let script = result.unwrap();
+        assert_eq!(script.script[0], 0xa9); // OP_HASH160
+
+        // Invalid prefix
+        let result = address_to_script("bitcoin:abc123");
+        assert!(result.is_err());
+
+        // Invalid format
+        let result = address_to_script("notanaddress");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_estimate_transaction_mass() {
+        // Basic transaction: 1 input, 2 outputs
+        let mass = estimate_transaction_mass(1, 2, false);
+        assert!(mass > 0);
+
+        // More inputs = more mass
+        let mass2 = estimate_transaction_mass(3, 2, false);
+        assert!(mass2 > mass);
+
+        // With magic = slightly more mass
+        let mass3 = estimate_transaction_mass(1, 2, true);
+        assert!(mass3 > mass);
+    }
+
+    #[cfg(feature = "keygen")]
+    #[test]
+    fn test_generate_nonce() {
+        let nonce1 = generate_nonce().unwrap();
+        let nonce2 = generate_nonce().unwrap();
+
+        // Should be different (with extremely high probability for CSPRNG)
+        assert_ne!(nonce1, nonce2);
+        assert_eq!(nonce1.len(), 16);
+    }
+}

@@ -1,39 +1,191 @@
 import { useParams } from 'react-router-dom'
-import { Download, RefreshCw, Share2, ExternalLink, Copy, CheckCircle } from 'lucide-react'
+import { useEffect, useState, useRef, useCallback } from 'react'
+import { Download, RefreshCw, Share2, ExternalLink, Copy, CheckCircle, Clock, Loader2, Wifi, WifiOff } from 'lucide-react'
 import Button from '../components/ui/Button'
+import { useStampStore } from '../stores/stamp'
+import { createCalendarClient, CalendarClient } from '../api/calendar'
+import type { StampResponse, WsConfirmedMessage } from '../types/api'
 
-function ProofPage() {
+const CALENDAR_URL = import.meta.env.VITE_CALENDAR_URL || 'http://localhost:3001'
+
+interface ParentBlock {
+  hash: string
+  daaScore: number
+}
+
+function ProofPage(): JSX.Element {
   const { id } = useParams()
+  const { stampResponse, setStampResponse, setConfirmedProof } = useStampStore()
+  const [error, setError] = useState<string | null>(null)
+  const [response, setResponse] = useState<StampResponse | null>(stampResponse)
+  const [wsConnected, setWsConnected] = useState(false)
 
-  // Mock proof data
+  // Keep client and unsubscribe refs stable across renders
+  const clientRef = useRef<CalendarClient | null>(null)
+  const unsubscribeRef = useRef<(() => void) | null>(null)
+
+  // Get or create the calendar client
+  const getClient = useCallback(() => {
+    if (!clientRef.current) {
+      clientRef.current = createCalendarClient(CALENDAR_URL)
+    }
+    return clientRef.current
+  }, [])
+
+  // Handle WebSocket confirmation - update state when confirmation arrives
+  const handleWsConfirmation = useCallback((msg: WsConfirmedMessage) => {
+    console.log('[KTCS] WebSocket confirmation received:', msg.proof_id)
+
+    const confirmedResponse: StampResponse = {
+      id: msg.proof_id,
+      status: 'confirmed',
+      submitted_at: response?.submitted_at || new Date().toISOString(),
+      confirmed_at: new Date(msg.timestamp).toISOString(),
+      daa_score: msg.daa_score,
+      blue_score: msg.blue_score,
+      block_hash: msg.block_hash,
+      tx_hash: response?.tx_hash,
+      proof: msg.proof,
+    }
+
+    setResponse(confirmedResponse)
+    setStampResponse(confirmedResponse)
+    setConfirmedProof(msg.proof)
+    setWsConnected(false)
+  }, [response, setStampResponse, setConfirmedProof])
+
+  // Subscribe to WebSocket for real-time confirmation
+  useEffect(() => {
+    if (!id) return
+
+    // If we already have the response from the store and it's confirmed, use it
+    if (stampResponse && stampResponse.id === id) {
+      setResponse(stampResponse)
+      if (stampResponse.status === 'confirmed') return
+    }
+
+    const client = getClient()
+    let pollTimeout: ReturnType<typeof setTimeout> | null = null
+    let isMounted = true
+
+    // Fetch initial stamp status
+    const fetchStamp = async () => {
+      if (!isMounted) return
+
+      try {
+        const data = await client.getStamp(id)
+        if (!isMounted) return
+
+        setResponse(data)
+        setStampResponse(data)
+
+        if (data.proof) {
+          setConfirmedProof(data.proof)
+        }
+
+        // If confirmed, we're done
+        if (data.status === 'confirmed') {
+          return
+        }
+
+        // Subscribe to WebSocket for real-time confirmation (only once)
+        if (!unsubscribeRef.current && isMounted) {
+          console.log('[KTCS] Subscribing to WebSocket for:', id)
+          setWsConnected(true)
+          unsubscribeRef.current = client.subscribeToConfirmation(id, handleWsConfirmation)
+        }
+
+        // Fallback polling in case WebSocket fails (less frequent: 5s)
+        if (isMounted) {
+          pollTimeout = setTimeout(fetchStamp, 5000)
+        }
+      } catch (err) {
+        if (!isMounted) return
+        console.error('[KTCS] Failed to fetch stamp:', err)
+        setError(err instanceof Error ? err.message : 'Failed to fetch stamp')
+
+        // Retry on error with polling
+        if (isMounted) {
+          pollTimeout = setTimeout(fetchStamp, 3000)
+        }
+      }
+    }
+
+    fetchStamp()
+
+    // Cleanup function
+    return () => {
+      isMounted = false
+      if (pollTimeout) {
+        clearTimeout(pollTimeout)
+      }
+      if (unsubscribeRef.current) {
+        console.log('[KTCS] Unsubscribing from WebSocket for:', id)
+        unsubscribeRef.current()
+        unsubscribeRef.current = null
+      }
+    }
+  }, [id, stampResponse, setStampResponse, setConfirmedProof, getClient, handleWsConfirmation])
+
+  const isPending = !response || response.status !== 'confirmed'
+
+  // Download proof file
+  const handleDownload = () => {
+    if (!response?.proof) return
+    const bytes = Uint8Array.from(atob(response.proof), c => c.charCodeAt(0))
+    const blob = new Blob([bytes], { type: 'application/octet-stream' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${id}.kts`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // Compute thermodynamic values with clearer logic
+  function computeBlueWork(): string {
+    if (response?.thermodynamic_weight?.blue_work_at_confirmation) {
+      return response.thermodynamic_weight.blue_work_at_confirmation
+    }
+    if (response?.blue_score) {
+      return `${(response.blue_score * 1e9).toExponential(2)}`
+    }
+    return 'calculating...'
+  }
+
+  // ~1 BTC confirmation per hour of Kaspa (36000 blocks at 10 BPS)
+  function computeBtcEquivalent(): string {
+    if (!response?.blue_score) return '0'
+    return (response.blue_score / 36000).toFixed(1)
+  }
+
+  // Use real data if available, otherwise fallback to display values
   const proof = {
     id,
-    status: 'confirmed',
-    digest: 'abc123def456789012345678901234567890123456789012345678901234',
+    status: response?.status || 'pending',
+    digest: response?.block_hash?.slice(0, 64) || 'pending...',
     algorithm: 'SHA-256',
-    size: 2847,
+    size: response?.proof ? atob(response.proof).length : 0,
     block: {
-      hash: 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba98765432',
-      daaScore: 42847291,
-      blueScore: 42501832,
-      timestamp: '2026-01-23T14:32:01.847Z',
-      parents: [
-        { hash: 'abc123...', daaScore: 42847290 },
-        { hash: 'def456...', daaScore: 42847290 },
-        { hash: '789abc...', daaScore: 42847289 },
-      ],
+      hash: response?.block_hash || 'pending...',
+      daaScore: response?.daa_score || 0,
+      blueScore: response?.blue_score || 0,
+      timestamp: response?.confirmed_at || new Date().toISOString(),
+      parents: [] as ParentBlock[],
     },
     tx: {
-      hash: '123fed456abc789def012345678901234567890123456789012345678901234',
+      hash: response?.tx_hash || 'pending...',
       index: 0,
     },
     thermodynamic: {
-      blueWork: '2.47e17',
-      btcEquivalent: 3.2,
+      blueWork: computeBlueWork(),
+      btcEquivalent: computeBtcEquivalent(),
     },
   }
 
-  const truncateHash = (hash: string) => `${hash.slice(0, 12)}...${hash.slice(-4)}`
+  function truncateHash(hash: string): string {
+    return `${hash.slice(0, 12)}...${hash.slice(-4)}`
+  }
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-12">
@@ -45,10 +197,17 @@ function ProofPage() {
             <span className="text-[var(--accent-primary)]">PROOF</span>
           </h1>
         </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-[var(--status-success)]/15 border border-[var(--status-success)]/30">
-          <CheckCircle className="w-4 h-4 text-[var(--status-success)]" />
-          <span className="text-sm font-medium text-[var(--status-success)]">CONFIRMED</span>
-        </div>
+        {isPending ? (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-[var(--status-warning)]/15 border border-[var(--status-warning)]/30">
+            <Clock className="w-4 h-4 text-[var(--status-warning)]" />
+            <span className="text-sm font-medium text-[var(--status-warning)]">PENDING</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-[var(--status-success)]/15 border border-[var(--status-success)]/30">
+            <CheckCircle className="w-4 h-4 text-[var(--status-success)]" />
+            <span className="text-sm font-medium text-[var(--status-success)]">CONFIRMED</span>
+          </div>
+        )}
       </div>
 
       {/* Main Grid */}
@@ -171,7 +330,11 @@ function ProofPage() {
             <div className="text-label mb-1">TIMESTAMP</div>
             <div className="text-[var(--text-primary)]">
               {new Date(proof.block.timestamp).toLocaleString()} UTC
-              <span className="text-[var(--text-tertiary)] ml-2">(42 minutes ago)</span>
+              {response?.confirmed_at && (
+                <span className="text-[var(--text-tertiary)] ml-2">
+                  ({Math.round((Date.now() - new Date(response.confirmed_at).getTime()) / 60000)} minutes ago)
+                </span>
+              )}
             </div>
           </div>
 
@@ -189,19 +352,57 @@ function ProofPage() {
         </div>
       </div>
 
+      {/* Loading Overlay */}
+      {isPending && (
+        <div className="mb-6 p-4 rounded-lg bg-[var(--status-warning)]/10 border border-[var(--status-warning)]/30">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-5 h-5 text-[var(--status-warning)] animate-spin" />
+              <div>
+                <p className="text-[var(--text-primary)]">Waiting for block confirmation...</p>
+                <p className="text-sm text-[var(--text-tertiary)]">
+                  This usually takes 1-10 seconds with Kaspa's 10 BPS
+                </p>
+              </div>
+            </div>
+            {/* WebSocket connection indicator */}
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-[var(--bg-tertiary)]" title={wsConnected ? 'Real-time updates active' : 'Using polling fallback'}>
+              {wsConnected ? (
+                <>
+                  <Wifi className="w-3.5 h-3.5 text-[var(--status-success)]" />
+                  <span className="text-xs text-[var(--text-tertiary)]">Live</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-3.5 h-3.5 text-[var(--text-tertiary)]" />
+                  <span className="text-xs text-[var(--text-tertiary)]">Polling</span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error Display */}
+      {error && (
+        <div className="mb-6 p-4 rounded-lg bg-red-500/10 border border-red-500/30">
+          <p className="text-red-400">{error}</p>
+        </div>
+      )}
+
       {/* Actions */}
       <div className="flex items-center justify-center gap-4">
-        <Button variant="secondary">
+        <Button variant="secondary" onClick={handleDownload} disabled={isPending}>
           <Download className="w-4 h-4 mr-2" />
           DOWNLOAD .kts
         </Button>
-        <Button variant="secondary">
+        <Button variant="secondary" onClick={() => window.location.reload()}>
           <RefreshCw className="w-4 h-4 mr-2" />
-          VERIFY AGAIN
+          REFRESH
         </Button>
-        <Button variant="secondary">
+        <Button variant="secondary" onClick={() => navigator.clipboard.writeText(window.location.href)}>
           <Share2 className="w-4 h-4 mr-2" />
-          SHARE LINK
+          COPY LINK
         </Button>
       </div>
     </div>

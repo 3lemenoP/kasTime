@@ -158,6 +158,7 @@ pub struct KaspaAttestation {
 
 impl KaspaAttestation {
     /// Create a new Kaspa attestation
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         daa_score: u64,
         blue_score: u64,
@@ -271,12 +272,13 @@ impl KtcsProof {
 }
 
 /// Batch mode for calendar aggregation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BatchMode {
     /// ~100ms batching window, ~10 batches/second
     Instant,
     /// ~1 second batching window, ~1 batch/second
+    #[default]
     Standard,
     /// ~10 second batching window, ~0.1 batch/second
     Economic,
@@ -290,12 +292,6 @@ impl BatchMode {
             BatchMode::Standard => 1000,
             BatchMode::Economic => 10000,
         }
-    }
-}
-
-impl Default for BatchMode {
-    fn default() -> Self {
-        BatchMode::Standard
     }
 }
 

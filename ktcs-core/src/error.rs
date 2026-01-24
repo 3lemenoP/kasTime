@@ -69,6 +69,16 @@ pub enum KtcsError {
     #[error("Connection error: {0}")]
     ConnectionError(String),
 
+    // Wallet and transaction errors
+
+    /// Invalid input data (e.g., malformed keys, invalid hex encoding)
+    #[error("Invalid data: {0}")]
+    InvalidData(String),
+
+    /// Insufficient funds to complete a transaction
+    #[error("Insufficient funds: {0}")]
+    InsufficientFunds(String),
+
     // I/O errors
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

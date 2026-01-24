@@ -35,14 +35,24 @@
 //! let result = verify_proof(&loaded, Some(document)).unwrap();
 //! ```
 
+// Core modules (always available)
 pub mod error;
 pub mod merkle;
 pub mod ops;
 pub mod proof;
 pub mod types;
 pub mod verify;
+pub mod wallet;
 
-// Re-export commonly used items
+// Kaspa client modules (feature-gated)
+#[cfg(feature = "kaspa-client")]
+pub mod direct;
+#[cfg(feature = "kaspa-client")]
+pub mod kaspa;
+#[cfg(feature = "kaspa-client")]
+pub mod tx;
+
+// Core re-exports (always available)
 pub use error::{KtcsError, Result};
 pub use merkle::{MerkleProof, MerkleTree};
 pub use ops::{apply_operation, apply_operations, create_commitment};
@@ -52,6 +62,31 @@ pub use types::{
     Operation, PendingAttestation, KTCS_MAGIC, PROOF_VERSION,
 };
 pub use verify::{verify_proof, AttestationInfo, ThermodynamicMetrics, VerificationResult};
+pub use wallet::KaspaWallet;
+
+// Kaspa client re-exports (feature-gated)
+#[cfg(feature = "kaspa-client")]
+pub use direct::{
+    complete_stamp, create_pending_stamp, prepare_direct_stamp, DirectBlockInfo,
+    DirectStampConfig, DirectStampResult, PreparedStamp,
+};
+#[cfg(feature = "kaspa-client")]
+pub use kaspa::{
+    add_blue_work, build_op_return_output, compare_blue_work, extract_commitment_from_tx,
+    format_blue_work, subtract_blue_work, BlockEvent, BlockInfo, ConnectionState, DagInfo,
+    KaspaClient, KaspaClientConfig, ScriptPublicKey, Transaction, TransactionInfo,
+    TransactionInput, TransactionOutput, Utxo, DEFAULT_RPC_PORT, TESTNET_RPC_PORT,
+};
+#[cfg(feature = "kaspa-client")]
+pub use tx::{
+    address_to_script, select_utxos, CommitmentTransaction, TransactionBuilder,
+    DEFAULT_FEE_PER_GRAM, DUST_THRESHOLD, KTCS_MAGIC_PREFIX, MAX_OP_RETURN_SIZE,
+    MIN_FEE_PER_GRAM,
+};
+
+// Platform-specific re-exports
+#[cfg(all(feature = "kaspa-client", not(target_arch = "wasm32")))]
+pub use wallet::generate_private_key;
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

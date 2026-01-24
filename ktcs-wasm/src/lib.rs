@@ -183,7 +183,7 @@ fn parse_proof_internal(proof_bytes: &[u8]) -> Result<WasmProofInfo, String> {
                 tx_hash: Some(hex::encode(ka.tx_hash)),
                 calendar_url: None,
             },
-            ktcs_core::Attestation::Bitcoin(btc) => WasmAttestationInfo {
+            ktcs_core::Attestation::Bitcoin(_btc) => WasmAttestationInfo {
                 attestation_type: "bitcoin".to_string(),
                 complete: true,
                 daa_score: None,

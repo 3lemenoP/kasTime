@@ -34,8 +34,6 @@ pub fn serialize_proof(proof: &KtcsProof) -> Vec<u8> {
 
 /// Deserialize a KTCS proof from binary .kts format
 pub fn deserialize_proof(data: &[u8]) -> Result<KtcsProof> {
-    let mut cursor = 0;
-
     // Check minimum length for header
     if data.len() < 26 {
         return Err(KtcsError::UnexpectedEof);
@@ -45,7 +43,7 @@ pub fn deserialize_proof(data: &[u8]) -> Result<KtcsProof> {
     if &data[0..18] != KTCS_MAGIC {
         return Err(KtcsError::InvalidMagicBytes);
     }
-    cursor = 18;
+    let mut cursor = 18;
 
     // Version
     let version = data[cursor];

@@ -1,25 +1,100 @@
 import { useState } from 'react'
-import { CheckCircle } from 'lucide-react'
+import { CheckCircle, XCircle, Loader2 } from 'lucide-react'
 import FileDropZone from '../components/ui/FileDropZone'
 import Button from '../components/ui/Button'
+import { verifyProof, parseProof, isWasmInitialized } from '../lib/wasm'
+import { createCalendarClient } from '../api/calendar'
+import type { VerificationResult, ProofInfo } from '../types/proof'
+import type { VerifyResponse } from '../types/api'
 
-function VerifyPage() {
+const CALENDAR_URL = import.meta.env.VITE_CALENDAR_URL || 'http://localhost:3001'
+
+/** Convert API verification response to client-side VerificationResult format */
+function convertApiResponse(apiResult: VerifyResponse): VerificationResult {
+  return {
+    valid: apiResult.valid,
+    digest: apiResult.digest,
+    computedCommitment: apiResult.digest,
+    attestations: apiResult.attestations.map(att => ({
+      attestationType: att.type,
+      complete: att.type !== 'pending',
+      blockHash: att.block_hash,
+      daaScore: att.daa_score,
+      blueScore: att.blue_score,
+    })),
+    error: apiResult.error,
+  }
+}
+
+function VerifyPage(): JSX.Element {
   const [proofFile, setProofFile] = useState<File | null>(null)
+  const [proofBytes, setProofBytes] = useState<Uint8Array | null>(null)
   const [originalFile, setOriginalFile] = useState<File | null>(null)
+  const [originalBytes, setOriginalBytes] = useState<Uint8Array | null>(null)
   const [verificationMode, setVerificationMode] = useState<'full' | 'light'>('full')
+  const [isVerifying, setIsVerifying] = useState(false)
+  const [result, setResult] = useState<VerificationResult | null>(null)
+  const [proofInfo, setProofInfo] = useState<ProofInfo | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  const handleProofDrop = (file: File) => {
+  const handleProofDrop = async (file: File) => {
     setProofFile(file)
+    setResult(null)
+    setError(null)
+    setProofInfo(null)
+    try {
+      const buffer = await file.arrayBuffer()
+      const bytes = new Uint8Array(buffer)
+      setProofBytes(bytes)
+
+      // Try to parse the proof for preview
+      if (isWasmInitialized()) {
+        const info = parseProof(bytes)
+        setProofInfo(info)
+      }
+    } catch (err) {
+      console.error('Error reading proof file:', err)
+      setError('Failed to read proof file')
+    }
   }
 
-  const handleOriginalDrop = (file: File) => {
+  const handleOriginalDrop = async (file: File) => {
     setOriginalFile(file)
+    try {
+      const buffer = await file.arrayBuffer()
+      setOriginalBytes(new Uint8Array(buffer))
+    } catch (err) {
+      console.error('Error reading original file:', err)
+    }
   }
 
-  const handleVerify = () => {
-    if (!proofFile) return
-    // TODO: Implement verification logic
-    console.log('Verifying:', proofFile.name)
+  const handleVerify = async () => {
+    if (!proofFile || !proofBytes) return
+
+    setIsVerifying(true)
+    setResult(null)
+    setError(null)
+
+    try {
+      if (verificationMode === 'full') {
+        // Full verification: client-side WASM (trustless)
+        if (!isWasmInitialized()) {
+          throw new Error('WASM module not initialized')
+        }
+        const verificationResult = verifyProof(proofBytes, originalBytes || undefined)
+        setResult(verificationResult)
+      } else {
+        // Light verification: server-side via API (faster but trusts server)
+        const client = createCalendarClient(CALENDAR_URL)
+        const apiResult = await client.verify(proofBytes)
+        setResult(convertApiResponse(apiResult))
+      }
+    } catch (err) {
+      console.error('Verification error:', err)
+      setError(err instanceof Error ? err.message : 'Verification failed')
+    } finally {
+      setIsVerifying(false)
+    }
   }
 
   return (
@@ -78,9 +153,77 @@ function VerifyPage() {
         </div>
 
         {/* Verify Button */}
-        <Button onClick={handleVerify} disabled={!proofFile} className="w-full">
-          VERIFY
+        <Button onClick={handleVerify} disabled={!proofFile || isVerifying} className="w-full">
+          {isVerifying ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              VERIFYING...
+            </>
+          ) : (
+            'VERIFY'
+          )}
         </Button>
+
+        {/* Verification Result */}
+        {result && (
+          <div className={`mt-6 p-4 rounded-lg border ${
+            result.valid
+              ? 'bg-green-500/10 border-green-500/30'
+              : 'bg-red-500/10 border-red-500/30'
+          }`}>
+            <div className="flex items-center gap-3 mb-3">
+              {result.valid ? (
+                <>
+                  <CheckCircle className="w-6 h-6 text-green-500" />
+                  <span className="text-lg font-medium text-green-500">PROOF VALID</span>
+                </>
+              ) : (
+                <>
+                  <XCircle className="w-6 h-6 text-red-500" />
+                  <span className="text-lg font-medium text-red-500">PROOF INVALID</span>
+                </>
+              )}
+            </div>
+            {result.digest && (
+              <div className="mt-2">
+                <span className="text-label text-xs">DIGEST</span>
+                <p className="font-data text-sm text-[var(--text-secondary)] break-all">
+                  {result.digest}
+                </p>
+              </div>
+            )}
+            {result.attestations && result.attestations.length > 0 && (
+              <div className="mt-3">
+                <span className="text-label text-xs">ATTESTATIONS</span>
+                <div className="mt-1 space-y-2">
+                  {result.attestations.map((att, idx) => (
+                    <div key={idx} className="text-sm text-[var(--text-secondary)]">
+                      <span className="text-[var(--accent-primary)]">{att.attestationType}</span>
+                      {att.complete && att.blockHash && (
+                        <span className="font-data text-xs ml-2 break-all">
+                          Block: {att.blockHash}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {result.error && (
+              <p className="mt-2 text-sm text-red-400">{result.error}</p>
+            )}
+          </div>
+        )}
+
+        {/* Error Display */}
+        {error && (
+          <div className="mt-6 p-4 rounded-lg border bg-red-500/10 border-red-500/30">
+            <div className="flex items-center gap-3">
+              <XCircle className="w-5 h-5 text-red-500" />
+              <span className="text-red-400">{error}</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Verification Modes */}

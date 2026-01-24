@@ -6,6 +6,14 @@
 use crate::error::{KtcsError, Result};
 use crate::types::Operation;
 use sha2::{Digest, Sha256};
+use sha3::Keccak256;
+
+/// Compute a hash using the given hasher type
+fn compute_hash<D: Digest>(data: &[u8]) -> Vec<u8> {
+    let mut hasher = D::new();
+    hasher.update(data);
+    hasher.finalize().to_vec()
+}
 
 /// Apply a single operation to the current hash state
 pub fn apply_operation(current: &[u8], op: &Operation) -> Result<Vec<u8>> {
@@ -20,28 +28,15 @@ pub fn apply_operation(current: &[u8], op: &Operation) -> Result<Vec<u8>> {
             result.extend_from_slice(current);
             Ok(result)
         }
-        Operation::Sha256 => {
-            let mut hasher = Sha256::new();
-            hasher.update(current);
-            Ok(hasher.finalize().to_vec())
-        }
+        Operation::Sha256 => Ok(compute_hash::<Sha256>(current)),
         Operation::Ripemd160 => {
-            use ripemd::{Digest as RipemdDigest, Ripemd160};
-            let mut hasher = Ripemd160::new();
-            hasher.update(current);
-            Ok(hasher.finalize().to_vec())
+            use ripemd::Ripemd160;
+            Ok(compute_hash::<Ripemd160>(current))
         }
-        Operation::Keccak256 => {
-            // For now, we don't have keccak256 - return error
-            // In production, would use sha3 crate
-            Err(KtcsError::Other("Keccak256 not yet implemented".to_string()))
-        }
-        Operation::Fork(_) => {
-            // Fork is a control flow operation, not a hash transformation
-            Err(KtcsError::Other(
-                "Fork operation cannot be applied directly".to_string(),
-            ))
-        }
+        Operation::Keccak256 => Ok(compute_hash::<Keccak256>(current)),
+        Operation::Fork(_) => Err(KtcsError::Other(
+            "Fork operation cannot be applied directly".to_string(),
+        )),
     }
 }
 
@@ -81,10 +76,7 @@ pub fn create_commitment_with_random_nonce(data_hash: &[u8; 32]) -> ([u8; 32], [
         .unwrap()
         .as_nanos();
 
-    let mut nonce = [0u8; 16];
-    let timestamp_bytes = timestamp.to_le_bytes();
-    nonce[..16].copy_from_slice(&timestamp_bytes);
-
+    let nonce: [u8; 16] = timestamp.to_le_bytes();
     let commitment = create_commitment(data_hash, &nonce);
     (commitment, nonce)
 }
@@ -190,6 +182,19 @@ mod tests {
         hasher.update(&sibling);
         let expected = hasher.finalize().to_vec();
 
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_keccak256_operation() {
+        let data = b"hello";
+        let op = Operation::Keccak256;
+        let result = apply_operation(data, &op).unwrap();
+
+        // Known Keccak256 of "hello"
+        let expected =
+            hex::decode("1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8")
+                .unwrap();
         assert_eq!(result, expected);
     }
 }

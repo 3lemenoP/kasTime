@@ -2,6 +2,7 @@
  * KTCS Calendar Client
  *
  * Client for interacting with the KTCS calendar server.
+ * Matches spec section 5.1 and 5.2.
  */
 
 import type {
@@ -9,7 +10,7 @@ import type {
   StampResponse,
   VerifyResponse,
   HealthResponse,
-  WsMessage,
+  WsServerMessage,
   WsConfirmedMessage,
 } from '../types';
 import type { BatchMode } from '../types/proof';
@@ -21,15 +22,42 @@ export class CalendarClient {
   private baseUrl: string;
   private wsUrl: string;
   private ws: WebSocket | null = null;
-  private subscriptions: Map<string, (proof: string) => void> = new Map();
+  private subscriptions: Map<string, (msg: WsConfirmedMessage) => void> = new Map();
 
   /**
    * Create a new calendar client
-   * @param baseUrl - Base URL of the calendar server (e.g., 'http://localhost:3000')
+   * @param baseUrl - Base URL of the calendar server (e.g., 'https://calendar.example.com')
+   * @param options - Client options
    */
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, options?: { allowInsecure?: boolean }) {
     this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
-    this.wsUrl = this.baseUrl.replace(/^http/, 'ws') + '/v1/stream';
+
+    // Security check: Warn if using unencrypted connections in production
+    const isLocalhost = this.baseUrl.includes('localhost') || this.baseUrl.includes('127.0.0.1');
+    const isSecure = this.baseUrl.startsWith('https://');
+
+    if (!isLocalhost && !isSecure && !options?.allowInsecure) {
+      console.warn(
+        '[KTCS Security Warning] Using unencrypted HTTP connection to calendar server. ' +
+        'This exposes timestamps and proofs to interception. ' +
+        'Use HTTPS in production or set allowInsecure: true to suppress this warning.'
+      );
+    }
+
+    // Construct WebSocket URL - prefer wss:// for https://
+    if (this.baseUrl.startsWith('https://')) {
+      this.wsUrl = this.baseUrl.replace(/^https/, 'wss') + '/v1/stream';
+    } else {
+      this.wsUrl = this.baseUrl.replace(/^http/, 'ws') + '/v1/stream';
+
+      if (!isLocalhost && !options?.allowInsecure) {
+        console.warn(
+          '[KTCS Security Warning] Using unencrypted WebSocket connection (ws://). ' +
+          'Timestamps and confirmations may be intercepted or tampered with. ' +
+          'Use wss:// (via HTTPS) in production.'
+        );
+      }
+    }
   }
 
   /**
@@ -42,7 +70,7 @@ export class CalendarClient {
     const request: StampRequest = {
       digest,
       algorithm: 'sha256',
-      batchMode: mode,
+      batch_mode: mode,
     };
 
     const response = await fetch(`${this.baseUrl}/v1/stamp`, {
@@ -117,22 +145,29 @@ export class CalendarClient {
   }
 
   /**
-   * Subscribe to confirmation events for a proof
+   * Subscribe to confirmation events for a proof via WebSocket
    * @param proofId - Stamp ID to subscribe to
    * @param callback - Called when the proof is confirmed
    * @returns Unsubscribe function
    */
-  subscribeToConfirmation(proofId: string, callback: (proof: string) => void): () => void {
+  subscribeToConfirmation(
+    proofId: string,
+    callback: (msg: WsConfirmedMessage) => void
+  ): () => void {
     this.subscriptions.set(proofId, callback);
     this.ensureWebSocket();
 
     // Send subscribe message
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'subscribe', proofId }));
+      this.ws.send(JSON.stringify({ type: 'subscribe', proof_id: proofId }));
     }
 
     return () => {
       this.subscriptions.delete(proofId);
+      // Send unsubscribe message
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: 'unsubscribe', proof_id: proofId }));
+      }
       if (this.subscriptions.size === 0) {
         this.closeWebSocket();
       }
@@ -149,18 +184,18 @@ export class CalendarClient {
     this.ws.onopen = () => {
       // Re-subscribe to all pending subscriptions
       for (const proofId of this.subscriptions.keys()) {
-        this.ws?.send(JSON.stringify({ type: 'subscribe', proofId }));
+        this.ws?.send(JSON.stringify({ type: 'subscribe', proof_id: proofId }));
       }
     };
 
     this.ws.onmessage = (event) => {
       try {
-        const msg: WsMessage = JSON.parse(event.data);
+        const msg: WsServerMessage = JSON.parse(event.data);
         if (msg.type === 'confirmed') {
-          const callback = this.subscriptions.get(msg.proofId);
+          const callback = this.subscriptions.get(msg.proof_id);
           if (callback) {
-            callback((msg as WsConfirmedMessage).proof);
-            this.subscriptions.delete(msg.proofId);
+            callback(msg);
+            this.subscriptions.delete(msg.proof_id);
           }
         }
       } catch (e) {
@@ -199,6 +234,6 @@ export class CalendarClient {
 /**
  * Create a calendar client with the default URL
  */
-export function createCalendarClient(baseUrl = 'http://localhost:3000'): CalendarClient {
+export function createCalendarClient(baseUrl = 'http://localhost:3001'): CalendarClient {
   return new CalendarClient(baseUrl);
 }

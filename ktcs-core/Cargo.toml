@@ -9,8 +9,16 @@ description = "Core library for Kaspa Thermodynamic Clock Service - proof format
 [dependencies]
 # Cryptography
 sha2.workspace = true
+sha3.workspace = true
 ripemd.workspace = true
 hex.workspace = true
+secp256k1.workspace = true
+zeroize.workspace = true
+bech32.workspace = true
+
+# CSPRNG (optional for non-WASM)
+getrandom = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
 
 # Serialization
 serde.workspace = true
@@ -18,12 +26,21 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 # Async (optional, for Kaspa client)
-tokio = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["sync", "time"] }
+
+# WebSocket (optional, for Kaspa client)
+tokio-tungstenite = { version = "0.21", optional = true }
+futures-util = { version = "0.3", optional = true }
+url = { version = "2.5", optional = true }
+
+# Logging (optional, for Kaspa client)
+tracing = { workspace = true, optional = true }
 
 [features]
-default = []
-kaspa-client = ["tokio"]
+default = ["keygen"]
+kaspa-client = ["tokio", "tokio-tungstenite", "futures-util", "url", "tracing"]
 wasm = []
+keygen = ["getrandom", "rand"]
 
 [dev-dependencies]
 tokio = { workspace = true }

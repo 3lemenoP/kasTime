@@ -11,7 +11,7 @@ name = "ktcs"
 path = "src/main.rs"
 
 [dependencies]
-ktcs-core = { path = "../ktcs-core" }
+ktcs-core = { path = "../ktcs-core", features = ["kaspa-client"] }
 clap.workspace = true
 tokio.workspace = true
 hex.workspace = true
