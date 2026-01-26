@@ -462,6 +462,26 @@ async fn main() {
         batch_processing_loop(batch_state, shutdown_rx).await;
     });
 
+    // Start periodic UTXO refresh task (every 10 seconds)
+    let utxo_kaspa = state.kaspa_service.clone();
+    let mut utxo_shutdown_rx = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        loop {
+            tokio::select! {
+                _ = utxo_shutdown_rx.recv() => {
+                    info!("UTXO refresh task received shutdown signal");
+                    break;
+                }
+                _ = interval.tick() => {
+                    if let Err(e) = utxo_kaspa.refresh_utxos().await {
+                        tracing::debug!("Periodic UTXO refresh failed: {}", e);
+                    }
+                }
+            }
+        }
+    });
+
     // Configure rate limiting with peer IP extraction (works for localhost)
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
@@ -926,11 +946,29 @@ async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receive
             let merkle_root = tree.root();
             info!("Merkle root: {}", hex::encode(merkle_root));
 
+            // Refresh UTXOs before each batch submission to avoid stale cache
+            if let Err(e) = state.kaspa_service.refresh_utxos().await {
+                tracing::warn!("Failed to refresh UTXOs before batch: {}", e);
+                // Continue anyway - submit_commitment will fail if truly no UTXOs
+            }
+
             // Submit commitment to Kaspa blockchain (or mock if not connected)
             let submission = match state.kaspa_service.submit_commitment(merkle_root).await {
                 Ok(result) => result,
                 Err(e) => {
                     tracing::error!("Failed to submit commitment: {}", e);
+
+                    // Requeue stamps for retry instead of discarding
+                    {
+                        let mut batch_manager = state.batch_manager.write().await;
+                        for stamp in &stamps {
+                            batch_manager.add_digest(stamp.id.clone(), stamp.digest, mode);
+                        }
+                        tracing::info!("Requeued {} stamps for retry", stamps.len());
+                    }
+
+                    // Add backoff delay to avoid rapid retry loops
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     continue;
                 }
             };
