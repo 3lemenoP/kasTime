@@ -8,8 +8,9 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use ktcs_core::{
-    create_pending_stamp, deserialize_proof, merkle::sha256, serialize_proof, verify_proof,
-    Attestation, BatchMode, KaspaAttestation, KaspaWallet, KtcsProof, PendingAttestation,
+    complete_stamp, deserialize_proof, generate_private_key, merkle::sha256, prepare_direct_stamp,
+    serialize_proof, sign_transaction, verify_proof, Attestation, BatchMode, DirectBlockInfo,
+    DirectStampConfig, KaspaClient, KaspaClientConfig, KaspaWallet, KtcsProof, PendingAttestation,
     ThermodynamicMetrics,
 };
 
@@ -110,6 +111,74 @@ enum Commands {
         /// File to hash
         file: PathBuf,
     },
+
+    /// Wallet management commands
+    #[command(alias = "w")]
+    Wallet {
+        #[command(subcommand)]
+        command: WalletCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum WalletCommands {
+    /// Generate a new private key
+    #[command(alias = "gen")]
+    Generate {
+        /// Output format: hex (default), json
+        #[arg(short, long, default_value = "hex")]
+        format: String,
+
+        /// Network: mainnet, testnet (default: mainnet)
+        #[arg(short, long, default_value = "mainnet")]
+        network: String,
+
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Show wallet address from private key
+    Address {
+        /// Path to file containing private key
+        #[arg(long, value_name = "FILE")]
+        wallet_file: Option<PathBuf>,
+
+        /// Read private key from stdin
+        #[arg(long)]
+        wallet_stdin: bool,
+
+        /// Network: mainnet, testnet
+        #[arg(short, long, default_value = "mainnet")]
+        network: String,
+    },
+
+    /// Check wallet balance
+    Balance {
+        /// Path to file containing private key
+        #[arg(long, value_name = "FILE")]
+        wallet_file: Option<PathBuf>,
+
+        /// Read private key from stdin
+        #[arg(long)]
+        wallet_stdin: bool,
+
+        /// Or specify address directly
+        #[arg(long)]
+        address: Option<String>,
+
+        /// Network: mainnet, testnet-10, testnet-11
+        #[arg(short, long, default_value = "mainnet")]
+        network: String,
+
+        /// RPC URL (if not using resolver)
+        #[arg(long)]
+        rpc: Option<String>,
+
+        /// Use PNN resolver to discover public nodes
+        #[arg(long, default_value = "true")]
+        resolver: bool,
+    },
 }
 
 #[tokio::main]
@@ -149,6 +218,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Hash { file } => {
             cmd_hash(file)?;
         }
+        Commands::Wallet { command } => match command {
+            WalletCommands::Generate {
+                format,
+                network,
+                output,
+            } => {
+                cmd_wallet_generate(&format, &network, output)?;
+            }
+            WalletCommands::Address {
+                wallet_file,
+                wallet_stdin,
+                network,
+            } => {
+                cmd_wallet_address(wallet_file, wallet_stdin, &network)?;
+            }
+            WalletCommands::Balance {
+                wallet_file,
+                wallet_stdin,
+                address,
+                network,
+                rpc,
+                resolver,
+            } => {
+                cmd_wallet_balance(wallet_file, wallet_stdin, address, &network, rpc.as_deref(), resolver).await?;
+            }
+        },
     }
 
     Ok(())
@@ -284,10 +379,7 @@ async fn cmd_stamp_direct(
             "Direct stamping requires --wallet-file or --wallet-stdin".red()
         );
         eprintln!();
-        eprintln!(
-            "{}",
-            "Examples:".bold()
-        );
+        eprintln!("{}", "Examples:".bold());
         eprintln!(
             "  {}",
             "ktcs stamp --direct --wallet-file /path/to/key.txt file.txt".dimmed()
@@ -314,59 +406,172 @@ async fn cmd_stamp_direct(
     println!("  {} {}", "RPC:".dimmed(), rpc_url);
     println!();
 
-    println!("{}", "Creating direct timestamp...".dimmed());
+    // 1. Connect to Kaspa node
+    println!("{} Connecting to Kaspa node...", "→".blue());
+    let client_config = KaspaClientConfig {
+        rpc_url: rpc_url.to_string(),
+        network: Some(network.to_string()),
+        ..Default::default()
+    };
+    let client = KaspaClient::new(client_config);
 
-    let prepared = create_pending_stamp(data)?;
+    match client.connect().await {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("{} Failed to connect: {}", "Error:".red(), e);
+            eprintln!();
+            eprintln!(
+                "{}",
+                "Make sure a Kaspa node is running and accessible at the RPC URL.".yellow()
+            );
+            return Err(e.into());
+        }
+    }
+
+    let dag_info = client.get_block_dag_info().await?;
+    println!(
+        "{} Connected to {} (DAA: {})",
+        "✓".green(),
+        dag_info.network,
+        dag_info.current_daa_score
+    );
+
+    // 2. Prepare stamp (fetches UTXOs, builds transaction)
+    println!("{} Preparing transaction...", "→".blue());
+    let stamp_config = DirectStampConfig::default();
+    let prepared = match prepare_direct_stamp(data, &wallet, &client, &stamp_config).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{} Failed to prepare stamp: {}", "Error:".red(), e);
+            if e.to_string().contains("No UTXOs") {
+                eprintln!();
+                eprintln!(
+                    "{}",
+                    "The wallet has no spendable funds. Please send some KAS to:".yellow()
+                );
+                eprintln!("  {}", wallet.address().cyan());
+            }
+            return Err(e.into());
+        }
+    };
 
     println!(
-        "  {} {}",
-        "Commitment:".dimmed(),
+        "{} Commitment: {}",
+        "✓".green(),
         hex::encode(prepared.commitment).yellow()
     );
-    println!();
+    println!(
+        "  {} {} sompi ({:.8} KAS)",
+        "Fee:".dimmed(),
+        prepared.estimated_fee,
+        prepared.estimated_fee as f64 / 100_000_000.0
+    );
 
-    // In a full implementation, we would:
-    // 1. Connect to the Kaspa node
-    // 2. Get UTXOs for the wallet
-    // 3. Build and sign the transaction
-    // 4. Submit and wait for confirmation
-    // 5. Build the complete proof
+    // 3. Sign transaction
+    let tx = prepared
+        .transaction
+        .as_ref()
+        .ok_or("Transaction not built")?;
+    let utxos = prepared.utxos.as_ref().ok_or("UTXOs not available")?;
 
     println!(
-        "{}",
-        "Note: Full direct stamping requires a running Kaspa node.".yellow()
+        "{} Signing {} input(s)...",
+        "→".blue(),
+        utxos.len()
     );
+    let signed_tx = sign_transaction(&tx.transaction, &wallet, utxos)?;
+    println!("{} Transaction signed", "✓".green());
+
+    // 4. Submit to network
+    println!("{} Submitting transaction...", "→".blue());
+    let tx_hash = match client.submit_transaction(signed_tx).await {
+        Ok(hash) => hash,
+        Err(e) => {
+            eprintln!("{} Failed to submit transaction: {}", "Error:".red(), e);
+            return Err(e.into());
+        }
+    };
     println!(
-        "{}",
-        "Creating pending proof that can be completed later.".dimmed()
+        "{} Transaction submitted: {}",
+        "✓".green(),
+        hex::encode(tx_hash)
     );
-    println!();
 
-    // Save as pending proof
-    let mut proof = prepared.proof;
-    proof.add_attestation(Attestation::Pending(PendingAttestation {
-        calendar_url: format!(
-            "direct://{}?commitment={}",
-            wallet.address(),
-            hex::encode(prepared.commitment)
-        ),
-    }));
+    // 5. Wait for confirmation
+    println!(
+        "{} Waiting for confirmation (timeout: {}s)...",
+        "→".blue(),
+        stamp_config.confirmation_timeout_secs
+    );
 
+    let timeout_ms = stamp_config.confirmation_timeout_secs * 1000;
+    let block_info = match client.wait_for_confirmation(&tx_hash, timeout_ms).await {
+        Ok(info) => info,
+        Err(e) => {
+            eprintln!("{} Confirmation timeout: {}", "Warning:".yellow(), e);
+            eprintln!();
+            eprintln!(
+                "{}",
+                "Transaction submitted but not confirmed within timeout.".yellow()
+            );
+            eprintln!(
+                "  {} {}",
+                "TX Hash:".dimmed(),
+                hex::encode(tx_hash)
+            );
+            eprintln!();
+            eprintln!(
+                "{}",
+                "The transaction may still confirm. Save the pending proof.".dimmed()
+            );
+
+            // Save pending proof
+            let mut proof = prepared.proof.clone();
+            proof.add_attestation(Attestation::Pending(PendingAttestation {
+                calendar_url: format!(
+                    "direct://{}?tx={}",
+                    wallet.address(),
+                    hex::encode(tx_hash)
+                ),
+            }));
+
+            let output_path = determine_output_path(output, file);
+            let kts_data = serialize_proof(&proof);
+            fs::write(&output_path, &kts_data)?;
+
+            println!("  {} {}", "Proof:".dimmed(), output_path.display());
+            return Ok(());
+        }
+    };
+
+    println!(
+        "{} Confirmed in block: {}",
+        "✓".green(),
+        hex::encode(block_info.hash)
+    );
+    println!("  {} {}", "DAA Score:".dimmed(), block_info.daa_score);
+    println!("  {} {}", "Blue Score:".dimmed(), block_info.blue_score);
+
+    // 6. Complete stamp with attestation
+    let direct_info = DirectBlockInfo::from(block_info);
+    let proof = complete_stamp(prepared, direct_info, tx_hash)?;
+
+    // 7. Save proof
     let output_path = determine_output_path(output, file);
-    let kts_data = serialize_proof(&proof);
-    fs::write(&output_path, &kts_data)?;
+    let proof_bytes = serialize_proof(&proof);
+    fs::write(&output_path, &proof_bytes)?;
 
-    println!("{}", "Timestamp prepared!".green().bold());
-    println!("  {} {}", "Proof:".dimmed(), output_path.display());
+    println!();
     println!(
-        "  {} {}",
-        "Status:".dimmed(),
-        "Pending (requires Kaspa node for completion)".yellow()
+        "{} {}",
+        "Proof saved:".green().bold(),
+        output_path.display()
     );
+    println!("  {} {} bytes", "Size:".dimmed(), proof_bytes.len());
     println!();
     println!(
         "{}",
-        "To complete: Connect to a Kaspa node and submit the transaction.".dimmed()
+        format!("Verify with: ktcs verify {}", output_path.display()).dimmed()
     );
 
     Ok(())
@@ -526,6 +731,14 @@ fn cmd_info(proof_path: PathBuf, json: bool) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+/// Response from calendar stamp endpoint
+#[derive(serde::Deserialize)]
+struct CalendarStampResponse {
+    status: String,
+    #[serde(default)]
+    proof: Option<String>,
+}
+
 async fn cmd_upgrade(
     proof_path: PathBuf,
     output: Option<PathBuf>,
@@ -535,7 +748,7 @@ async fn cmd_upgrade(
 
     // Load proof
     let kts_data = fs::read(&proof_path)?;
-    let mut proof = deserialize_proof(&kts_data)?;
+    let proof = deserialize_proof(&kts_data)?;
 
     if proof.is_complete() {
         println!("{}", "Proof is already complete!".green());
@@ -550,39 +763,84 @@ async fn cmd_upgrade(
 
     if let Some(url) = pending {
         println!("  {} {}", "Fetching from:".dimmed(), url);
-
-        // In a real implementation, we would fetch from the calendar
-        // For now, simulate with a mock attestation
         println!();
-        println!(
-            "{}",
-            "Calendar upgrade not yet implemented. Simulating confirmation...".yellow()
-        );
 
-        // Remove pending attestation and add a mock Kaspa attestation
-        proof.attestations.retain(|a| a.is_complete());
-        proof.add_attestation(Attestation::Kaspa(KaspaAttestation::new(
-            42000000,
-            41500000,
-            [0xab; 32],
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-            [0xcd; 32],
-            0,
-            [0x12; 32],
-            vec![[0x11; 32], [0x22; 32]],
-        )));
+        // Fetch stamp status from calendar
+        let client = reqwest::Client::new();
+        let response = match client
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                println!("{} Failed to connect to calendar: {}", "Error:".red(), e);
+                return Err(e.into());
+            }
+        };
+
+        if !response.status().is_success() {
+            println!(
+                "{} Calendar returned status: {}",
+                "Error:".red(),
+                response.status()
+            );
+            return Err(format!("Calendar returned error: {}", response.status()).into());
+        }
+
+        let stamp_response: CalendarStampResponse = match response.json().await {
+            Ok(r) => r,
+            Err(e) => {
+                println!("{} Failed to parse calendar response: {}", "Error:".red(), e);
+                return Err(e.into());
+            }
+        };
+
+        // Check status
+        println!("  {} {}", "Status:".dimmed(), stamp_response.status);
+
+        if stamp_response.status != "confirmed" {
+            println!();
+            println!(
+                "{}",
+                "Stamp not yet confirmed. Try again later.".yellow()
+            );
+            return Ok(());
+        }
+
+        // Get the complete proof from response
+        let proof_base64 = stamp_response.proof.ok_or("Confirmed stamp missing proof")?;
+        let complete_proof_bytes = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &proof_base64,
+        )?;
+
+        // Verify we can deserialize the complete proof
+        let complete_proof = deserialize_proof(&complete_proof_bytes)?;
+        if !complete_proof.is_complete() {
+            println!("{}", "Warning: Calendar returned incomplete proof".yellow());
+        }
 
         // Save upgraded proof
         let output_path = output.unwrap_or(proof_path);
-        let upgraded_data = serialize_proof(&proof);
-        fs::write(&output_path, &upgraded_data)?;
+        fs::write(&output_path, &complete_proof_bytes)?;
 
         println!();
         println!("{}", "Proof upgraded!".green().bold());
         println!("  {} {}", "Output:".dimmed(), output_path.display());
+
+        // Show attestation info
+        for attestation in complete_proof.attestations.iter() {
+            if let Attestation::Kaspa(ka) = attestation {
+                println!();
+                println!("{}", "Attestation:".bold());
+                println!("  {} {}", "DAA Score:".dimmed(), ka.daa_score);
+                println!("  {} {}", "Blue Score:".dimmed(), ka.blue_score);
+                println!("  {} {}", "Block Hash:".dimmed(), hex::encode(ka.block_hash));
+                break;
+            }
+        }
     } else {
         println!("{}", "No pending attestation found in proof".red());
     }
@@ -594,6 +852,183 @@ fn cmd_hash(file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let data = fs::read(&file)?;
     let hash = sha256(&data);
     println!("{}", hex::encode(hash));
+    Ok(())
+}
+
+/// Generate a new wallet private key
+fn cmd_wallet_generate(
+    format: &str,
+    network: &str,
+    output: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Generate new key
+    let private_key = generate_private_key()?;
+    let wallet = KaspaWallet::from_private_key(&private_key, network)?;
+
+    let key_hex = hex::encode(private_key);
+
+    match format {
+        "json" => {
+            let json = serde_json::json!({
+                "private_key": key_hex,
+                "address": wallet.address(),
+                "network": network,
+                "public_key": hex::encode(wallet.public_key()),
+            });
+
+            if let Some(path) = output {
+                fs::write(&path, serde_json::to_string_pretty(&json)?)?;
+                eprintln!("{} Wallet saved to: {}", "✓".green(), path.display());
+            } else {
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            }
+        }
+        _ => {
+            // Default: hex format
+            if let Some(path) = output {
+                fs::write(&path, &key_hex)?;
+                eprintln!("{} Private key saved to: {}", "✓".green(), path.display());
+                eprintln!("  {} {}", "Address:".dimmed(), wallet.address());
+            } else {
+                // Print only key to stdout (for piping)
+                println!("{}", key_hex);
+                // Print address to stderr (visible but not piped)
+                eprintln!();
+                eprintln!("{} {}", "Address:".dimmed(), wallet.address());
+                eprintln!("{} {}", "Network:".dimmed(), network);
+            }
+        }
+    }
+
+    eprintln!();
+    eprintln!(
+        "{}",
+        "SECURITY: Store this key securely! Anyone with this key controls the wallet.".yellow()
+    );
+
+    Ok(())
+}
+
+/// Show wallet address from private key
+fn cmd_wallet_address(
+    wallet_file: Option<PathBuf>,
+    wallet_stdin: bool,
+    network: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let wallet_key = read_wallet_key(wallet_file, wallet_stdin)?
+        .ok_or("Either --wallet-file or --wallet-stdin is required")?;
+
+    let wallet = KaspaWallet::from_hex(&wallet_key, network)?;
+
+    println!("{}", "KTCS Wallet".bold().cyan());
+    println!();
+    println!("  {} {}", "Address:".dimmed(), wallet.address().yellow());
+    println!("  {} {}", "Network:".dimmed(), network);
+    println!(
+        "  {} {}",
+        "Public Key:".dimmed(),
+        hex::encode(wallet.public_key())
+    );
+
+    Ok(())
+}
+
+/// Check wallet balance
+async fn cmd_wallet_balance(
+    wallet_file: Option<PathBuf>,
+    wallet_stdin: bool,
+    address: Option<String>,
+    network: &str,
+    rpc_url: Option<&str>,
+    use_resolver: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Get address from wallet key or direct input
+    let address = if let Some(addr) = address {
+        addr
+    } else {
+        let wallet_key = read_wallet_key(wallet_file, wallet_stdin)?
+            .ok_or("Either --wallet-file, --wallet-stdin, or --address is required")?;
+        let wallet = KaspaWallet::from_hex(&wallet_key, network)?;
+        wallet.address().to_string()
+    };
+
+    println!("{}", "KTCS Wallet Balance".bold().cyan());
+    println!();
+    println!("  {} {}", "Address:".dimmed(), address.cyan());
+
+    // Configure client - use resolver or direct URL
+    let client_config = if use_resolver && rpc_url.is_none() {
+        println!("{} Using resolver to find {} node...", "→".blue(), network);
+        KaspaClientConfig {
+            rpc_url: String::new(), // Empty = use resolver
+            network: Some(network.to_string()),
+            use_resolver: true,
+            ..Default::default()
+        }
+    } else {
+        let url = rpc_url.unwrap_or("ws://localhost:16110");
+        println!("{} Connecting to {}...", "→".blue(), url);
+        KaspaClientConfig {
+            rpc_url: url.to_string(),
+            network: Some(network.to_string()),
+            use_resolver: false,
+            ..Default::default()
+        }
+    };
+    let client = KaspaClient::new(client_config);
+
+    match client.connect().await {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("{} Failed to connect: {}", "Error:".red(), e);
+            eprintln!();
+            eprintln!(
+                "{}",
+                "Make sure a Kaspa node is running and accessible at the RPC URL.".yellow()
+            );
+            return Err(e.into());
+        }
+    }
+
+    let dag_info = client.get_block_dag_info().await?;
+    println!(
+        "{} Connected to {} (DAA: {})",
+        "✓".green(),
+        dag_info.network,
+        dag_info.current_daa_score
+    );
+
+    // Fetch UTXOs
+    println!("{} Fetching UTXOs...", "→".blue());
+    let utxos = client.get_utxos_by_address(&address).await?;
+
+    // Calculate balance
+    let total_sompi: u64 = utxos.iter().map(|u| u.amount).sum();
+    let total_kas = total_sompi as f64 / 100_000_000.0;
+
+    println!();
+    println!("{}", "Balance".bold().green());
+    println!("  {} {} sompi", "Total:".dimmed(), total_sompi);
+    println!("  {} {:.8} KAS", "Total:".dimmed(), total_kas);
+    println!();
+    println!("{} {} UTXO(s)", "UTXOs:".dimmed(), utxos.len());
+
+    if !utxos.is_empty() && utxos.len() <= 10 {
+        for (i, utxo) in utxos.iter().enumerate() {
+            println!(
+                "  {}. {} sompi (DAA: {})",
+                i + 1,
+                utxo.amount,
+                utxo.block_daa_score
+            );
+        }
+    } else if utxos.len() > 10 {
+        println!("  (showing first 10)");
+        for (i, utxo) in utxos.iter().take(10).enumerate() {
+            println!("  {}. {} sompi", i + 1, utxo.amount);
+        }
+    }
+
     Ok(())
 }
 

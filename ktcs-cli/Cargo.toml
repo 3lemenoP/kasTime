@@ -24,5 +24,8 @@ tracing-subscriber.workspace = true
 # For HTTP requests to calendar
 reqwest = { version = "0.11", features = ["json"] }
 
+# For base64 decoding
+base64 = "0.21"
+
 # For colored output
 colored = "2.0"

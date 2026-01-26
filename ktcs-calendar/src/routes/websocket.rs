@@ -40,7 +40,6 @@ pub enum ClientMessage {
 /// WebSocket message to client
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
-#[allow(dead_code)]
 pub enum ServerMessage {
     /// Proof has been confirmed
     #[serde(rename = "confirmed")]
@@ -80,6 +79,12 @@ pub struct ConfirmationEvent {
     pub proof_base64: String,
 }
 
+/// Batched event broadcast when stamps enter a batch
+#[derive(Debug, Clone)]
+pub struct BatchedEvent {
+    pub proof_id: String,
+}
+
 /// Maximum number of subscriptions per session (prevent abuse)
 const MAX_SUBSCRIPTIONS_PER_SESSION: usize = 100;
 
@@ -87,6 +92,8 @@ const MAX_SUBSCRIPTIONS_PER_SESSION: usize = 100;
 pub struct WsState {
     /// Broadcast channel for confirmation events
     pub confirmations_tx: broadcast::Sender<ConfirmationEvent>,
+    /// Broadcast channel for batched events
+    pub batched_tx: broadcast::Sender<BatchedEvent>,
     /// Active subscriptions: proof_id -> set of session IDs
     subscriptions: RwLock<HashMap<String, HashSet<u64>>>,
     /// Per-session subscription count for rate limiting
@@ -99,8 +106,10 @@ impl WsState {
     /// Create a new WebSocket state
     pub fn new() -> Self {
         let (confirmations_tx, _) = broadcast::channel(1024);
+        let (batched_tx, _) = broadcast::channel(1024);
         Self {
             confirmations_tx,
+            batched_tx,
             subscriptions: RwLock::new(HashMap::new()),
             session_subscription_counts: RwLock::new(HashMap::new()),
             next_session_id: RwLock::new(0),
@@ -191,6 +200,13 @@ impl WsState {
             debug!("No subscribers for confirmation: {}", e);
         }
     }
+
+    /// Broadcast a batched event
+    pub fn broadcast_batched(&self, event: BatchedEvent) {
+        if let Err(e) = self.batched_tx.send(event) {
+            debug!("No subscribers for batched event: {}", e);
+        }
+    }
 }
 
 impl Default for WsState {
@@ -226,6 +242,8 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S) {
 
     // Subscribe to confirmation broadcast
     let mut confirmations_rx = ws_state.confirmations_tx.subscribe();
+    // Subscribe to batched broadcast
+    let mut batched_rx = ws_state.batched_tx.subscribe();
 
     // Track this session's subscriptions
     let session_subscriptions: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
@@ -271,6 +289,34 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S) {
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!("Session lagged behind by {} messages", n);
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Task to forward batched events to subscribed clients
+    let subs_clone2 = session_subscriptions.clone();
+    let tx_clone2 = tx.clone();
+    let batched_task = tokio::spawn(async move {
+        loop {
+            match batched_rx.recv().await {
+                Ok(event) => {
+                    // Check if this session is subscribed to this proof
+                    let subs = subs_clone2.read().await;
+                    if subs.contains(&event.proof_id) {
+                        let msg = ServerMessage::Batched {
+                            proof_id: event.proof_id,
+                        };
+                        if tx_clone2.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("Session lagged behind by {} batched messages", n);
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     break;
@@ -338,6 +384,7 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S) {
     // Cancel tasks
     send_task.abort();
     confirm_task.abort();
+    batched_task.abort();
 }
 
 #[cfg(test)]

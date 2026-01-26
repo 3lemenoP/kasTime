@@ -14,7 +14,8 @@ ripemd.workspace = true
 hex.workspace = true
 secp256k1.workspace = true
 zeroize.workspace = true
-bech32.workspace = true
+blake2 = "0.10"
+blake2b_simd = "1.0"
 
 # CSPRNG (optional for non-WASM)
 getrandom = { workspace = true, optional = true }
@@ -29,16 +30,19 @@ thiserror.workspace = true
 tokio = { workspace = true, optional = true, features = ["sync", "time"] }
 
 # WebSocket (optional, for Kaspa client)
-tokio-tungstenite = { version = "0.21", optional = true }
+tokio-tungstenite = { version = "0.21", optional = true, features = ["native-tls"] }
 futures-util = { version = "0.3", optional = true }
 url = { version = "2.5", optional = true }
+
+# HTTP client (optional, for resolver)
+reqwest = { version = "0.11", optional = true, default-features = false, features = ["json", "native-tls-vendored"] }
 
 # Logging (optional, for Kaspa client)
 tracing = { workspace = true, optional = true }
 
 [features]
 default = ["keygen"]
-kaspa-client = ["tokio", "tokio-tungstenite", "futures-util", "url", "tracing"]
+kaspa-client = ["tokio", "tokio-tungstenite", "futures-util", "url", "tracing", "reqwest"]
 wasm = []
 keygen = ["getrandom", "rand"]
 

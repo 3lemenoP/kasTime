@@ -55,6 +55,8 @@ export interface StampResponse {
   proof?: string;
   /** Thermodynamic security metrics */
   thermodynamic_weight?: ThermodynamicWeight;
+  /** Parent block hashes (hex, for confirmed stamps) */
+  parent_hashes?: string[];
 }
 
 /** Current confirmations info per spec Section 5.1.3 */

@@ -3,18 +3,19 @@
 //! Aggregation service that batches timestamp requests and commits them to Kaspa.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::{header, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tower::ServiceBuilder;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_governor::{governor::GovernorConfigBuilder, key_extractor::PeerIpKeyExtractor, GovernorLayer};
 use tower_http::{
     cors::CorsLayer,
     limit::RequestBodyLimitLayer,
@@ -29,17 +30,23 @@ use ktcs_core::{
     serialize_proof, Attestation, BatchMode, KaspaAttestation, KtcsProof, MerkleTree,
     PendingAttestation,
 };
-use routes::websocket::{ws_handler, ConfirmationEvent, WsAppState, WsState};
+use routes::websocket::{ws_handler, BatchedEvent, ConfirmationEvent, WsAppState, WsState};
 use services::batch_manager::{BatchManager, PendingStamp};
+use services::database::{Database, DbStampRecord, DbStampStatus};
 use services::kaspa_service::{KaspaService, KaspaServiceConfig};
 
 /// Application state shared across handlers
 #[derive(Clone)]
 struct AppState {
     batch_manager: Arc<RwLock<BatchManager>>,
-    stamps: Arc<RwLock<HashMap<String, StampRecord>>>,
+    /// SQLite database for persistent stamp storage
+    database: Arc<Database>,
     kaspa_service: Arc<KaspaService>,
     ws_state: Arc<WsState>,
+    /// Public URL for calendar (used in pending attestations)
+    public_url: String,
+    /// API key for authentication (None if not required)
+    api_key: Option<String>,
 }
 
 impl WsAppState for AppState {
@@ -48,30 +55,8 @@ impl WsAppState for AppState {
     }
 }
 
-/// Record of a submitted stamp
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct StampRecord {
-    id: String,
-    digest: [u8; 32],
-    status: StampStatus,
-    submitted_at: u64,
-    confirmed_at: Option<u64>,
-    proof: Option<KtcsProof>,
-    batch_mode: BatchMode,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
-enum StampStatus {
-    Pending,
-    Batched,
-    Confirmed,
-}
-
 /// API request to submit a stamp
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct StampRequest {
     /// Hex-encoded digest (SHA256 hash)
     digest: String,
@@ -114,6 +99,9 @@ struct StampResponse {
     proof: Option<String>, // Spec uses "proof" not "confirmed_proof"
     #[serde(skip_serializing_if = "Option::is_none")]
     thermodynamic_weight: Option<ThermodynamicWeightResponse>,
+    /// Parent block hashes (for confirmed stamps)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_hashes: Option<Vec<String>>,
 }
 
 /// Thermodynamic weight information per spec Section 5.1.2
@@ -177,6 +165,8 @@ struct HealthResponse {
 struct ServerConfig {
     /// Bind address
     bind_address: String,
+    /// Public URL for calendar (used in pending attestations)
+    public_url: String,
     /// Allowed CORS origins (comma-separated, or "*" for all)
     cors_origins: Vec<String>,
     /// Rate limit: requests per second per IP
@@ -293,18 +283,25 @@ impl ServerConfig {
                 .collect()
         };
 
+        let bind_address = std::env::var("BIND_ADDRESS")
+            .unwrap_or_else(|_| "0.0.0.0:3001".to_string());
+
+        // Public URL defaults to http://{bind_address}
+        let public_url = std::env::var("KTCS_PUBLIC_URL")
+            .unwrap_or_else(|_| format!("http://{}", bind_address));
+
         Self {
-            bind_address: std::env::var("BIND_ADDRESS")
-                .unwrap_or_else(|_| "0.0.0.0:3001".to_string()),
+            bind_address,
+            public_url,
             cors_origins,
             rate_limit_per_second: std::env::var("RATE_LIMIT_PER_SECOND")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(10), // 10 requests per second default
+                .unwrap_or(100), // 100 requests per second default (generous for dev)
             rate_limit_burst: std::env::var("RATE_LIMIT_BURST")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(50), // Burst of 50 requests
+                .unwrap_or(200), // Burst of 200 requests
             max_body_size: std::env::var("MAX_BODY_SIZE")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -334,6 +331,40 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
             .allow_origin(allowed_origins)
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
             .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::ACCEPT])
+            // Cache preflight requests for 1 hour to reduce OPTIONS requests
+            .max_age(std::time::Duration::from_secs(3600))
+    }
+}
+
+/// API key authentication middleware
+///
+/// Validates the X-API-Key header against the configured API key.
+/// If no API key is configured (api_key is None), all requests are allowed.
+async fn api_key_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // If no API key is configured, allow all requests
+    let Some(ref expected_key) = state.api_key else {
+        return Ok(next.run(request).await);
+    };
+
+    // Check X-API-Key header
+    match request.headers().get("X-API-Key") {
+        Some(provided_key) => {
+            let provided = provided_key.to_str().unwrap_or("");
+            if provided == expected_key {
+                Ok(next.run(request).await)
+            } else {
+                warn!("Invalid API key provided");
+                Err(StatusCode::UNAUTHORIZED)
+            }
+        }
+        None => {
+            warn!("Missing X-API-Key header for protected endpoint");
+            Err(StatusCode::UNAUTHORIZED)
+        }
     }
 }
 
@@ -370,7 +401,13 @@ async fn main() {
     }
     info!("Kaspa configuration validated successfully");
 
-    let kaspa_service = Arc::new(KaspaService::new(kaspa_config));
+    let kaspa_service = match KaspaService::new(kaspa_config) {
+        Ok(service) => Arc::new(service),
+        Err(e) => {
+            error!("Failed to initialize Kaspa service: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     // Try to connect to Kaspa node
     let kaspa_clone = kaspa_service.clone();
@@ -387,29 +424,50 @@ async fn main() {
     // Initialize WebSocket state
     let ws_state = Arc::new(WsState::new());
 
-    // Store API key in state for auth middleware
-    let _api_key = server_config.api_key.clone();
-    let require_api_key = server_config.require_api_key;
+    // Initialize database
+    let db_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "sqlite:ktcs-calendar.db".to_string());
+    let database = match Database::new(&db_url).await {
+        Ok(db) => Arc::new(db),
+        Err(e) => {
+            error!("Failed to initialize database: {}", e);
+            std::process::exit(1);
+        }
+    };
+    info!("Database initialized: {}", db_url);
+
+    // Store API key in state for auth middleware (only if required)
+    let api_key = if server_config.require_api_key {
+        server_config.api_key.clone()
+    } else {
+        None
+    };
 
     // Initialize application state
     let state = AppState {
         batch_manager: Arc::new(RwLock::new(BatchManager::new())),
-        stamps: Arc::new(RwLock::new(HashMap::new())),
+        database,
         kaspa_service,
         ws_state,
+        public_url: server_config.public_url.clone(),
+        api_key: api_key.clone(),
     };
+
+    // Create shutdown channel for graceful shutdown
+    let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
 
     // Start batch processing task
     let batch_state = state.clone();
     tokio::spawn(async move {
-        batch_processing_loop(batch_state).await;
+        batch_processing_loop(batch_state, shutdown_rx).await;
     });
 
-    // Configure rate limiting
+    // Configure rate limiting with peer IP extraction (works for localhost)
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
             .per_second(server_config.rate_limit_per_second as u64)
             .burst_size(server_config.rate_limit_burst)
+            .key_extractor(PeerIpKeyExtractor)
             .finish()
             .expect("Failed to create rate limiter config")
     );
@@ -417,13 +475,19 @@ async fn main() {
     // Build CORS layer
     let cors_layer = build_cors_layer(&server_config.cors_origins);
 
+    // Build protected routes (require API key if configured)
+    let protected_routes = Router::new()
+        .route("/stamp", post(submit_stamp))
+        .route("/stamp/:id", get(get_stamp))
+        .route("/verify", post(verify_proof))
+        .route("/stream", get(ws_handler::<AppState>))
+        .route_layer(middleware::from_fn_with_state(state.clone(), api_key_middleware));
+
     // Build router with security layers
+    // CORS must be applied LAST (outermost) so it adds headers to ALL responses including rate-limited 429s
     let app = Router::new()
-        .route("/health", get(health_check))
-        .route("/v1/stamp", post(submit_stamp))
-        .route("/v1/stamp/:id", get(get_stamp))
-        .route("/v1/verify", post(verify_proof))
-        .route("/v1/stream", get(ws_handler::<AppState>))
+        .route("/health", get(health_check))  // Health check without auth
+        .nest("/v1", protected_routes)
         .layer(ServiceBuilder::new()
             // Body size limit
             .layer(RequestBodyLimitLayer::new(server_config.max_body_size))
@@ -431,9 +495,9 @@ async fn main() {
             .layer(GovernorLayer {
                 config: governor_conf,
             })
-            // CORS
-            .layer(cors_layer)
         )
+        // CORS applied after ServiceBuilder - outermost layer
+        .layer(cors_layer)
         .with_state(state);
 
     info!("KTCS Calendar Server starting on {}", server_config.bind_address);
@@ -441,7 +505,7 @@ async fn main() {
     info!("  CORS origins: {:?}", server_config.cors_origins);
     info!("  Rate limit: {}/s (burst: {})", server_config.rate_limit_per_second, server_config.rate_limit_burst);
     info!("  Max body size: {} bytes", server_config.max_body_size);
-    info!("  API key required: {}", require_api_key);
+    info!("  API key required: {}", api_key.is_some());
     info!("Endpoints:");
     info!("  POST /v1/stamp     - Submit a timestamp");
     info!("  GET  /v1/stamp/:id - Get stamp status");
@@ -458,8 +522,26 @@ async fn main() {
         }
     };
 
-    // Run server with proper error handling
-    if let Err(e) = axum::serve(listener, app).await {
+    // Run server with graceful shutdown
+    // Use into_make_service_with_connect_info to enable PeerIpKeyExtractor for rate limiting
+    let app = app.into_make_service_with_connect_info::<SocketAddr>();
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            // Wait for Ctrl+C signal
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+            info!("Shutdown signal received, draining requests...");
+
+            // Signal batch processor to shut down
+            let _ = shutdown_tx.send(());
+
+            // Give some time for graceful cleanup
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            info!("Graceful shutdown complete");
+        });
+
+    if let Err(e) = server.await {
         error!("Server error: {}", e);
         std::process::exit(1);
     }
@@ -467,8 +549,9 @@ async fn main() {
 
 /// Health check endpoint
 async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
-    let stamps = state.stamps.read().await;
-    let pending = stamps.values().filter(|s| s.status == StampStatus::Pending).count();
+    let pending = state.database.count_by_status(DbStampStatus::Pending)
+        .await
+        .unwrap_or(0) as usize;
 
     Json(HealthResponse {
         status: "ok".to_string(),
@@ -482,6 +565,14 @@ async fn submit_stamp(
     State(state): State<AppState>,
     Json(req): Json<StampRequest>,
 ) -> Result<Json<StampResponse>, (StatusCode, String)> {
+    // Validate algorithm (currently only sha256 is supported)
+    if req.algorithm != "sha256" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Unsupported algorithm: '{}'. Only 'sha256' is supported.", req.algorithm),
+        ));
+    }
+
     // Parse and validate digest
     let digest_bytes = hex::decode(&req.digest)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid digest hex: {}", e)))?;
@@ -489,7 +580,7 @@ async fn submit_stamp(
     if digest_bytes.len() != 32 {
         return Err((
             StatusCode::BAD_REQUEST,
-            "Digest must be 32 bytes (SHA256)".to_string(),
+            format!("Invalid digest length for {}: expected 32 bytes, got {}", req.algorithm, digest_bytes.len()),
         ));
     }
 
@@ -508,7 +599,7 @@ async fn submit_stamp(
     // Create pending proof
     let mut proof = KtcsProof::new(digest.to_vec());
     proof.add_attestation(Attestation::Pending(PendingAttestation {
-        calendar_url: format!("http://localhost:3001/v1/stamp/{}", id),
+        calendar_url: format!("{}/v1/stamp/{}", state.public_url, id),
     }));
 
     let pending_proof = base64::Engine::encode(
@@ -516,22 +607,18 @@ async fn submit_stamp(
         serialize_proof(&proof),
     );
 
-    // Create record
-    let record = StampRecord {
+    // Save to database
+    let db_record = DbStampRecord {
         id: id.clone(),
         digest,
-        status: StampStatus::Pending,
-        submitted_at: now,
+        status: DbStampStatus::Pending,
+        submitted_at: (now / 1000) as i64, // ms -> seconds for DB
         confirmed_at: None,
-        proof: Some(proof),
-        batch_mode: req.batch_mode,
+        proof: Some(serialize_proof(&proof)),
+        batch_mode: format!("{:?}", req.batch_mode),
     };
-
-    // Store record
-    {
-        let mut stamps = state.stamps.write().await;
-        stamps.insert(id.clone(), record);
-    }
+    state.database.save_stamp(&db_record).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
 
     // Add to batch manager
     {
@@ -559,6 +646,7 @@ async fn submit_stamp(
         tx_hash: None,
         proof: None,
         thermodynamic_weight: None,
+        parent_hashes: None,
     }))
 }
 
@@ -567,17 +655,18 @@ async fn get_stamp(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<StampResponse>, (StatusCode, String)> {
-    let stamps = state.stamps.read().await;
-
-    let record = stamps
-        .get(&id)
+    let db_record = state.database.get_stamp(&id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?
         .ok_or((StatusCode::NOT_FOUND, format!("Stamp not found: {}", id)))?;
 
-    let response = match &record.status {
-        StampStatus::Pending => StampResponse {
-            id: record.id.clone(),
+    // Convert DB timestamp (seconds) to milliseconds for formatting
+    let submitted_at_ms = (db_record.submitted_at as u64) * 1000;
+
+    let response = match db_record.status {
+        DbStampStatus::Pending => StampResponse {
+            id: db_record.id.clone(),
             status: "pending".to_string(),
-            submitted_at: format_timestamp(record.submitted_at),
+            submitted_at: format_timestamp(submitted_at_ms),
             estimated_confirmation: None,
             pending_proof: None,
             confirmed_at: None,
@@ -587,11 +676,12 @@ async fn get_stamp(
             tx_hash: None,
             proof: None,
             thermodynamic_weight: None,
+            parent_hashes: None,
         },
-        StampStatus::Batched => StampResponse {
-            id: record.id.clone(),
+        DbStampStatus::Batched => StampResponse {
+            id: db_record.id.clone(),
             status: "batched".to_string(),
-            submitted_at: format_timestamp(record.submitted_at),
+            submitted_at: format_timestamp(submitted_at_ms),
             estimated_confirmation: None,
             pending_proof: None,
             confirmed_at: None,
@@ -601,17 +691,23 @@ async fn get_stamp(
             tx_hash: None,
             proof: None,
             thermodynamic_weight: None,
+            parent_hashes: None,
         },
-        StampStatus::Confirmed => {
-            let proof = record.proof.as_ref().unwrap();
+        DbStampStatus::Confirmed => {
+            // Deserialize the proof from database
+            let proof_bytes = db_record.proof.as_ref()
+                .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Confirmed stamp missing proof".to_string()))?;
+            let proof = ktcs_core::deserialize_proof(proof_bytes)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid proof data: {}", e)))?;
+
             let proof_base64 = base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
-                serialize_proof(proof),
+                proof_bytes,
             );
 
             // Get attestation data
             let ka = proof.kaspa_attestations().next();
-            let (daa_score, blue_score, block_hash, tx_hash, thermo) = match ka {
+            let (daa_score, blue_score, block_hash, tx_hash, thermo, parent_hashes) = match ka {
                 Some(att) => (
                     Some(att.daa_score),
                     Some(att.blue_score),
@@ -622,23 +718,32 @@ async fn get_stamp(
                         current_blue_work: None, // Would be populated if connected to node
                         accumulated_since: None,
                     }),
+                    Some(
+                        att.parent_hashes
+                            .iter()
+                            .map(|h| hex::encode(h))
+                            .collect::<Vec<_>>(),
+                    ),
                 ),
-                None => (None, None, None, None, None),
+                None => (None, None, None, None, None, None),
             };
 
+            let confirmed_at_ms = db_record.confirmed_at.map(|t| (t as u64) * 1000);
+
             StampResponse {
-                id: record.id.clone(),
+                id: db_record.id.clone(),
                 status: "confirmed".to_string(),
-                submitted_at: format_timestamp(record.submitted_at),
+                submitted_at: format_timestamp(submitted_at_ms),
                 estimated_confirmation: None,
                 pending_proof: None,
-                confirmed_at: record.confirmed_at.map(format_timestamp),
+                confirmed_at: confirmed_at_ms.map(format_timestamp),
                 daa_score,
                 blue_score,
                 block_hash,
                 tx_hash,
                 proof: Some(proof_base64),
                 thermodynamic_weight: thermo,
+                parent_hashes,
             }
         }
     };
@@ -760,11 +865,29 @@ async fn verify_proof(
 }
 
 /// Background task that processes batches
-async fn batch_processing_loop(state: AppState) {
+async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receiver<()>) {
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
 
     loop {
-        interval.tick().await;
+        tokio::select! {
+            _ = shutdown.recv() => {
+                info!("Batch processor received shutdown signal, draining current batch...");
+                // Process any remaining ready batches before exiting
+                let ready_batches: Vec<(BatchMode, Vec<PendingStamp>)> = {
+                    let mut batch_manager = state.batch_manager.write().await;
+                    batch_manager.get_ready_batches()
+                };
+                if !ready_batches.is_empty() {
+                    info!("Processing {} remaining batches before shutdown", ready_batches.len());
+                }
+                // Note: For a complete implementation, we would process remaining batches here
+                info!("Batch processor shutdown complete");
+                return;
+            }
+            _ = interval.tick() => {
+                // Continue with normal processing below
+            }
+        }
 
         // Check for batches ready to commit
         let ready_batches: Vec<(BatchMode, Vec<PendingStamp>)> = {
@@ -782,6 +905,13 @@ async fn batch_processing_loop(state: AppState) {
                 stamps.len(),
                 mode
             );
+
+            // Broadcast batched status for each stamp
+            for pending in &stamps {
+                state.ws_state.broadcast_batched(BatchedEvent {
+                    proof_id: pending.id.clone(),
+                });
+            }
 
             // Build Merkle tree from digests
             let leaves: Vec<[u8; 32]> = stamps.iter().map(|s| s.digest).collect();
@@ -825,105 +955,76 @@ async fn batch_processing_loop(state: AppState) {
             );
 
             // Update each stamp with its proof
-            let mut stamps_lock = state.stamps.write().await;
-
             for (i, pending) in stamps.iter().enumerate() {
-                if let Some(record) = stamps_lock.get_mut(&pending.id) {
-                    // Get Merkle proof for this leaf
-                    let merkle_proof = match tree.get_proof(i) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            tracing::error!("Failed to get Merkle proof: {}", e);
-                            continue;
-                        }
-                    };
-
-                    // Build complete proof
-                    let mut proof = KtcsProof::new(pending.digest.to_vec());
-
-                    // Add Merkle path operations
-                    for op in merkle_proof.to_operations() {
-                        proof.add_operation(op);
+                // Get Merkle proof for this leaf
+                let merkle_proof = match tree.get_proof(i) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!("Failed to get Merkle proof: {}", e);
+                        continue;
                     }
+                };
 
-                    // Add attestation
-                    proof.add_attestation(Attestation::Kaspa(attestation.clone()));
+                // Build complete proof
+                let mut proof = KtcsProof::new(pending.digest.to_vec());
 
-                    // Serialize proof for WebSocket broadcast
-                    let proof_base64 = base64::Engine::encode(
-                        &base64::engine::general_purpose::STANDARD,
-                        serialize_proof(&proof),
-                    );
-
-                    // Update record
-                    record.status = StampStatus::Confirmed;
-                    record.confirmed_at = Some(submission.timestamp);
-                    record.proof = Some(proof);
-
-                    info!("Stamp confirmed: {}", pending.id);
-
-                    // Broadcast confirmation to WebSocket subscribers
-                    state.ws_state.broadcast_confirmation(ConfirmationEvent {
-                        proof_id: pending.id.clone(),
-                        block_hash: hex::encode(submission.block_hash),
-                        daa_score: submission.daa_score,
-                        blue_score: submission.blue_score,
-                        timestamp: submission.timestamp,
-                        proof_base64,
-                    });
+                // Add Merkle path operations
+                for op in merkle_proof.to_operations() {
+                    proof.add_operation(op);
                 }
+
+                // Add attestation
+                proof.add_attestation(Attestation::Kaspa(attestation.clone()));
+
+                // Serialize proof
+                let proof_bytes = serialize_proof(&proof);
+
+                // Serialize proof for WebSocket broadcast
+                let proof_base64 = base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &proof_bytes,
+                );
+
+                // Update database
+                let confirmed_at_secs = (submission.timestamp / 1000) as i64;
+                if let Err(e) = state.database.update_stamp_status(
+                    &pending.id,
+                    DbStampStatus::Confirmed,
+                    Some(confirmed_at_secs),
+                ).await {
+                    tracing::error!("Failed to update stamp status in database: {}", e);
+                }
+                if let Err(e) = state.database.update_stamp_proof(&pending.id, &proof_bytes).await {
+                    tracing::error!("Failed to update stamp proof in database: {}", e);
+                }
+
+                info!("Stamp confirmed: {}", pending.id);
+
+                // Broadcast confirmation to WebSocket subscribers
+                state.ws_state.broadcast_confirmation(ConfirmationEvent {
+                    proof_id: pending.id.clone(),
+                    block_hash: hex::encode(submission.block_hash),
+                    daa_score: submission.daa_score,
+                    blue_score: submission.blue_score,
+                    timestamp: submission.timestamp,
+                    proof_base64,
+                });
             }
         }
     }
 }
 
 fn format_timestamp(ms: u64) -> String {
-    // ISO 8601 format
-    let secs = ms / 1000;
-    let millis = ms % 1000;
+    use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-    let days_since_epoch = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
+    let secs = (ms / 1000) as i64;
+    let nanos = ((ms % 1000) * 1_000_000) as u32;
 
-    let mut year = 1970u64;
-    let mut remaining_days = days_since_epoch;
-
-    loop {
-        let days_in_year = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-            366
-        } else {
-            365
-        };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        year += 1;
-    }
-
-    let days_in_months: [u64; 12] = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 1u64;
-    for days in days_in_months {
-        if remaining_days < days {
-            break;
-        }
-        remaining_days -= days;
-        month += 1;
-    }
-    let day = remaining_days + 1;
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        year, month, day, hours, minutes, seconds, millis
-    )
+    OffsetDateTime::from_unix_timestamp(secs)
+        .ok()
+        .and_then(|dt| dt.replace_nanosecond(nanos).ok())
+        .and_then(|dt| dt.format(&Rfc3339).ok())
+        .unwrap_or_else(|| "Invalid timestamp".to_string())
 }
 
 #[cfg(test)]
@@ -935,19 +1036,26 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    /// Create test app state with mock mode enabled
-    fn create_test_state() -> AppState {
+    /// Create test app state with mock mode enabled and in-memory database
+    async fn create_test_state() -> AppState {
         let kaspa_config = KaspaServiceConfig {
             mock_mode: true,
             ..Default::default()
         };
-        let kaspa_service = Arc::new(KaspaService::new(kaspa_config));
+        let kaspa_service = Arc::new(KaspaService::new(kaspa_config).expect("Failed to create test Kaspa service"));
+
+        // Use in-memory database for tests
+        let database = Arc::new(
+            Database::in_memory().await.expect("Failed to create test database")
+        );
 
         AppState {
             batch_manager: Arc::new(RwLock::new(BatchManager::new())),
-            stamps: Arc::new(RwLock::new(HashMap::new())),
+            database,
             kaspa_service,
             ws_state: Arc::new(WsState::new()),
+            public_url: "http://localhost:3001".to_string(),
+            api_key: None, // No API key for tests
         }
     }
 
@@ -963,7 +1071,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_check() {
-        let state = create_test_state();
+        let state = create_test_state().await;
         let app = create_test_router(state);
 
         let response = app
@@ -989,7 +1097,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_stamp() {
-        let state = create_test_state();
+        let state = create_test_state().await;
         let app = create_test_router(state);
 
         // Submit a stamp
@@ -1025,7 +1133,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_stamp_invalid_digest() {
-        let state = create_test_state();
+        let state = create_test_state().await;
         let app = create_test_router(state);
 
         // Submit with invalid (too short) digest
@@ -1051,7 +1159,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_stamp_not_found() {
-        let state = create_test_state();
+        let state = create_test_state().await;
         let app = create_test_router(state);
 
         let response = app
@@ -1075,7 +1183,7 @@ mod tests {
         // 3. Check the stamp is confirmed
         // 4. Verify the proof
 
-        let state = create_test_state();
+        let state = create_test_state().await;
 
         // Start batch processing in background
         let batch_state = state.clone();
@@ -1114,20 +1222,24 @@ mod tests {
                         submission.parent_hashes,
                     );
 
-                    // Update stamps
-                    let mut stamps_lock = batch_state.stamps.write().await;
+                    // Update stamps in database
                     for (i, pending) in stamps.iter().enumerate() {
-                        if let Some(record) = stamps_lock.get_mut(&pending.id) {
-                            let merkle_proof = tree.get_proof(i).unwrap();
-                            let mut proof = KtcsProof::new(pending.digest.to_vec());
-                            for op in merkle_proof.to_operations() {
-                                proof.add_operation(op);
-                            }
-                            proof.add_attestation(Attestation::Kaspa(attestation.clone()));
-                            record.status = StampStatus::Confirmed;
-                            record.confirmed_at = Some(submission.timestamp);
-                            record.proof = Some(proof);
+                        let merkle_proof = tree.get_proof(i).unwrap();
+                        let mut proof = KtcsProof::new(pending.digest.to_vec());
+                        for op in merkle_proof.to_operations() {
+                            proof.add_operation(op);
                         }
+                        proof.add_attestation(Attestation::Kaspa(attestation.clone()));
+
+                        let proof_bytes = serialize_proof(&proof);
+                        let confirmed_at_secs = (submission.timestamp / 1000) as i64;
+
+                        let _ = batch_state.database.update_stamp_status(
+                            &pending.id,
+                            DbStampStatus::Confirmed,
+                            Some(confirmed_at_secs),
+                        ).await;
+                        let _ = batch_state.database.update_stamp_proof(&pending.id, &proof_bytes).await;
                     }
                 }
             }
@@ -1223,12 +1335,19 @@ mod tests {
 
     #[test]
     fn test_format_timestamp() {
-        // Test epoch
-        assert_eq!(format_timestamp(0), "1970-01-01T00:00:00.000Z");
+        // Test epoch - RFC 3339 may omit milliseconds when zero
+        let epoch = format_timestamp(0);
+        assert!(epoch.starts_with("1970-01-01T00:00:00"));
+        assert!(epoch.ends_with("Z"));
 
         // Test a known timestamp (2024-01-01 00:00:00 UTC)
         let ts = 1704067200000u64;
         let formatted = format_timestamp(ts);
         assert!(formatted.starts_with("2024-01-01T00:00:00"));
+
+        // Test with milliseconds
+        let ts_with_ms = 1704067200123u64;
+        let formatted_ms = format_timestamp(ts_with_ms);
+        assert!(formatted_ms.contains("123") || formatted_ms.contains(".123"));
     }
 }

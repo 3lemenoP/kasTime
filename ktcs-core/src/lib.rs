@@ -50,6 +50,8 @@ pub mod direct;
 #[cfg(feature = "kaspa-client")]
 pub mod kaspa;
 #[cfg(feature = "kaspa-client")]
+pub mod resolver;
+#[cfg(feature = "kaspa-client")]
 pub mod tx;
 
 // Core re-exports (always available)
@@ -63,12 +65,16 @@ pub use types::{
 };
 pub use verify::{verify_proof, AttestationInfo, ThermodynamicMetrics, VerificationResult};
 pub use wallet::KaspaWallet;
+#[cfg(feature = "kaspa-client")]
+pub use wallet::{
+    compute_kaspa_sighash, SigHashType, SighashInput, SighashOutput, SighashTransaction,
+};
 
 // Kaspa client re-exports (feature-gated)
 #[cfg(feature = "kaspa-client")]
 pub use direct::{
-    complete_stamp, create_pending_stamp, prepare_direct_stamp, DirectBlockInfo,
-    DirectStampConfig, DirectStampResult, PreparedStamp,
+    complete_stamp, create_pending_stamp, prepare_direct_stamp, prepare_direct_stamp_offline,
+    sign_transaction, DirectBlockInfo, DirectStampConfig, DirectStampResult, PreparedStamp,
 };
 #[cfg(feature = "kaspa-client")]
 pub use kaspa::{
@@ -77,6 +83,8 @@ pub use kaspa::{
     KaspaClient, KaspaClientConfig, ScriptPublicKey, Transaction, TransactionInfo,
     TransactionInput, TransactionOutput, Utxo, DEFAULT_RPC_PORT, TESTNET_RPC_PORT,
 };
+#[cfg(feature = "kaspa-client")]
+pub use resolver::{resolve_url, Resolver};
 #[cfg(feature = "kaspa-client")]
 pub use tx::{
     address_to_script, select_utxos, CommitmentTransaction, TransactionBuilder,

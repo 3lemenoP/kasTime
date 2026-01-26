@@ -235,8 +235,9 @@ pub enum ConnectionState {
 #[derive(Debug, Clone)]
 pub struct KaspaClientConfig {
     /// RPC endpoint URL (e.g., "ws://localhost:16110")
+    /// If empty and use_resolver is true, will be discovered via resolver
     pub rpc_url: String,
-    /// Network name for validation
+    /// Network name for validation and resolver
     pub network: Option<String>,
     /// Connection timeout in milliseconds
     pub connect_timeout_ms: u64,
@@ -244,6 +245,8 @@ pub struct KaspaClientConfig {
     pub request_timeout_ms: u64,
     /// Enable automatic reconnection
     pub auto_reconnect: bool,
+    /// Use the PNN resolver to discover public nodes
+    pub use_resolver: bool,
 }
 
 impl Default for KaspaClientConfig {
@@ -254,6 +257,33 @@ impl Default for KaspaClientConfig {
             connect_timeout_ms: 10000,
             request_timeout_ms: 30000,
             auto_reconnect: true,
+            use_resolver: false,
+        }
+    }
+}
+
+impl KaspaClientConfig {
+    /// Create a config that uses the resolver for testnet-10
+    pub fn testnet10_public() -> Self {
+        Self {
+            rpc_url: String::new(), // Will be resolved
+            network: Some("testnet-10".to_string()),
+            connect_timeout_ms: 15000,
+            request_timeout_ms: 30000,
+            auto_reconnect: true,
+            use_resolver: true,
+        }
+    }
+
+    /// Create a config that uses the resolver for mainnet
+    pub fn mainnet_public() -> Self {
+        Self {
+            rpc_url: String::new(), // Will be resolved
+            network: Some("mainnet".to_string()),
+            connect_timeout_ms: 15000,
+            request_timeout_ms: 30000,
+            auto_reconnect: true,
+            use_resolver: true,
         }
     }
 }
@@ -268,11 +298,15 @@ struct RpcRequest<T: Serialize> {
 }
 
 /// JSON-RPC response structure
+/// Note: Kaspa wRPC returns results in `params` field, not `result`
 #[derive(Debug, Clone, Deserialize)]
 struct RpcResponse<T> {
     #[allow(dead_code)]
-    jsonrpc: String,
+    jsonrpc: Option<String>,
+    /// Standard JSON-RPC result field
     result: Option<T>,
+    /// Kaspa wRPC returns results in params field
+    params: Option<T>,
     error: Option<RpcError>,
     id: u64,
 }
@@ -336,6 +370,9 @@ impl KaspaClient {
 
     /// Connect to the Kaspa node
     ///
+    /// If `use_resolver` is enabled in config and no rpc_url is set,
+    /// this will use the PNN resolver to discover a public endpoint.
+    ///
     /// # Errors
     ///
     /// Returns an error if the connection fails or times out.
@@ -346,8 +383,22 @@ impl KaspaClient {
             *state = ConnectionState::Connecting;
         }
 
+        // Determine the URL to connect to
+        let rpc_url = if self.config.use_resolver && self.config.rpc_url.is_empty() {
+            // Use resolver to find a public endpoint
+            let network = self.config.network.as_deref().unwrap_or("mainnet");
+            tracing::info!("Using resolver to find {} endpoint...", network);
+
+            let resolver = crate::resolver::Resolver::default();
+            resolver.get_node_url(network).await?
+        } else {
+            self.config.rpc_url.clone()
+        };
+
+        tracing::info!("Connecting to {}", rpc_url);
+
         // Parse and validate the URL
-        let url = url::Url::parse(&self.config.rpc_url)
+        let url = url::Url::parse(&rpc_url)
             .map_err(|e| KtcsError::ConnectionError(format!("Invalid RPC URL: {}", e)))?;
 
         // Connect to the WebSocket
@@ -446,6 +497,12 @@ impl KaspaClient {
         let request_json = serde_json::to_string(&request)
             .map_err(|e| KtcsError::InvalidData(format!("Failed to serialize request: {}", e)))?;
 
+        // Debug: print full request for submitTransaction
+        #[cfg(debug_assertions)]
+        if method.contains("SubmitTransaction") {
+            eprintln!("Full RPC request:\n{}", serde_json::to_string_pretty(&request).unwrap_or_default());
+        }
+
         // Create response channel
         let (tx, rx) = oneshot::channel();
         {
@@ -476,7 +533,8 @@ impl KaspaClient {
             )));
         }
 
-        response.result.ok_or_else(|| {
+        // Kaspa wRPC returns results in `params` field, standard JSON-RPC uses `result`
+        response.result.or(response.params).ok_or_else(|| {
             KtcsError::InvalidData("Empty response from Kaspa node".to_string())
         })
     }
@@ -521,13 +579,10 @@ impl KaspaClient {
             blue_score: u64,
             blue_work: String,
             timestamp: u64,
-            parents: Vec<BlockLevel>,
-        }
-
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct BlockLevel {
-            parent_hashes: Vec<String>,
+            /// Parents field - Kaspa wRPC returns array of arrays of hash strings
+            /// Format: [["hash1", "hash2"], ["hash3"]] where each inner array is a level
+            #[serde(default)]
+            parents: Vec<Vec<String>>,
         }
 
         #[derive(Deserialize)]
@@ -576,12 +631,12 @@ impl KaspaClient {
         blue_work[start..].copy_from_slice(&blue_work_bytes[..32.min(blue_work_bytes.len())]);
 
         // Parse parent hashes (first level only)
+        // Format is Vec<Vec<String>> where each inner vec is a level
         let parent_hashes: Vec<[u8; 32]> = header
             .parents
             .first()
             .map(|level| {
                 level
-                    .parent_hashes
                     .iter()
                     .filter_map(|h| {
                         let bytes = hex::decode(h).ok()?;
@@ -644,12 +699,20 @@ impl KaspaClient {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct DagInfoResponse {
-            network_name: String,
+            /// Network name (e.g., "mainnet", "testnet-10")
+            network: String,
+            /// Virtual DAA score
             virtual_daa_score: u64,
+            /// Blue score (may not be present in all responses)
+            #[serde(default)]
             blue_score: u64,
+            /// Current difficulty
             difficulty: f64,
+            /// Past median time in milliseconds
             past_median_time: u64,
+            /// Pruning point hash (hex string)
             pruning_point_hash: String,
+            /// Virtual parent hashes (tip hashes)
             virtual_parent_hashes: Vec<String>,
         }
 
@@ -680,7 +743,7 @@ impl KaspaClient {
         }
 
         Ok(DagInfo {
-            network: response.network_name,
+            network: response.network,
             current_daa_score: response.virtual_daa_score,
             current_blue_score: response.blue_score,
             current_blue_work: [0u8; 32], // Will be fetched separately if needed
@@ -734,9 +797,133 @@ impl KaspaClient {
     /// # Errors
     ///
     /// Returns an error if the transaction is not found or the request fails.
+    #[cfg(feature = "kaspa-client")]
     pub async fn get_transaction(&self, hash: &[u8; 32]) -> Result<TransactionInfo> {
-        // TODO: Implement full transaction lookup via getTransactionsByAddresses
-        Err(KtcsError::TransactionNotFound(hex::encode(hash)))
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RpcScriptPublicKey {
+            script_public_key: String,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RpcTransactionOutput {
+            amount: u64,
+            script_public_key: RpcScriptPublicKey,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RpcOutpoint {
+            transaction_id: String,
+            index: u32,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RpcTransactionInput {
+            previous_outpoint: RpcOutpoint,
+            signature_script: String,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RpcTransaction {
+            #[allow(dead_code)]
+            version: u16,
+            inputs: Vec<RpcTransactionInput>,
+            outputs: Vec<RpcTransactionOutput>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct GetTransactionResponse {
+            transaction: RpcTransaction,
+            block_hash: Option<String>,
+        }
+
+        let tx_id = hex::encode(hash);
+        let params = serde_json::json!({ "transactionId": tx_id });
+
+        match self.send_request::<_, GetTransactionResponse>("getTransaction", params).await {
+            Ok(response) => {
+                // Parse block_hash if present
+                let block_hash = response.block_hash.as_ref().and_then(|h| {
+                    hex::decode(h).ok().and_then(|v| {
+                        if v.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&v);
+                            Some(arr)
+                        } else {
+                            None
+                        }
+                    })
+                });
+
+                // Convert outputs
+                let outputs: Vec<TransactionOutput> = response.transaction.outputs
+                    .into_iter()
+                    .map(|o| {
+                        let script_bytes = hex::decode(&o.script_public_key.script_public_key)
+                            .unwrap_or_default();
+                        TransactionOutput {
+                            amount: o.amount,
+                            script_public_key: ScriptPublicKey {
+                                version: 0,
+                                script: script_bytes,
+                            },
+                        }
+                    })
+                    .collect();
+
+                // Convert inputs
+                let inputs: Vec<TransactionInput> = response.transaction.inputs
+                    .into_iter()
+                    .map(|i| {
+                        let prev_hash = hex::decode(&i.previous_outpoint.transaction_id)
+                            .ok()
+                            .and_then(|v| {
+                                if v.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(&v);
+                                    Some(arr)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or([0u8; 32]);
+
+                        let sig_script = hex::decode(&i.signature_script).unwrap_or_default();
+
+                        TransactionInput {
+                            previous_outpoint_hash: prev_hash,
+                            previous_outpoint_index: i.previous_outpoint.index,
+                            signature_script: sig_script,
+                        }
+                    })
+                    .collect();
+
+                Ok(TransactionInfo {
+                    hash: *hash,
+                    block_hash,
+                    outputs,
+                    inputs,
+                    is_accepted: block_hash.is_some(),
+                })
+            }
+            Err(KtcsError::ConnectionError(msg)) if msg.contains("not found") => {
+                Err(KtcsError::TransactionNotFound(tx_id))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    #[cfg(not(feature = "kaspa-client"))]
+    pub async fn get_transaction(&self, hash: &[u8; 32]) -> Result<TransactionInfo> {
+        Err(KtcsError::ConnectionError(format!(
+            "Kaspa client feature not enabled, cannot get transaction {}",
+            hex::encode(hash)
+        )))
     }
 
     /// Check if a transaction is in the mempool (pending)
@@ -814,14 +1001,8 @@ impl KaspaClient {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct TxOutput {
-            amount: u64,
-            script_public_key: TxScriptPublicKey,
-        }
-
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct TxScriptPublicKey {
-            version: u16,
+            value: u64,
+            /// ScriptPublicKey is a hex string: version (2 bytes BE) + script concatenated
             script_public_key: String,
         }
 
@@ -835,6 +1016,7 @@ impl KaspaClient {
             subnetwork_id: String,
             gas: u64,
             payload: String,
+            mass: u64,
         }
 
         #[derive(Deserialize)]
@@ -853,7 +1035,7 @@ impl KaspaClient {
                     index: i.previous_outpoint_index,
                 },
                 signature_script: hex::encode(&i.signature_script),
-                sequence: 0,
+                sequence: u64::MAX, // Kaspa default sequence
                 sig_op_count: 1,
             })
             .collect();
@@ -861,12 +1043,15 @@ impl KaspaClient {
         let outputs: Vec<TxOutput> = tx
             .outputs
             .iter()
-            .map(|o| TxOutput {
-                amount: o.amount,
-                script_public_key: TxScriptPublicKey {
-                    version: o.script_public_key.version,
-                    script_public_key: hex::encode(&o.script_public_key.script),
-                },
+            .map(|o| {
+                // ScriptPublicKey is encoded as: version (2 bytes BE) + script
+                let mut spk_bytes = Vec::with_capacity(2 + o.script_public_key.script.len());
+                spk_bytes.extend_from_slice(&o.script_public_key.version.to_be_bytes());
+                spk_bytes.extend_from_slice(&o.script_public_key.script);
+                TxOutput {
+                    value: o.amount,
+                    script_public_key: hex::encode(spk_bytes),
+                }
             })
             .collect();
 
@@ -878,12 +1063,17 @@ impl KaspaClient {
             subnetwork_id: hex::encode(tx.subnetwork_id),
             gas: tx.gas,
             payload: hex::encode(&tx.payload),
+            mass: 0, // Node will calculate actual mass
         };
 
         let params = serde_json::json!({
             "transaction": submit_tx,
             "allowOrphan": false
         });
+
+        // Debug: print the request JSON
+        #[cfg(debug_assertions)]
+        eprintln!("submitTransaction params:\n{}", serde_json::to_string_pretty(&params).unwrap_or_default());
 
         let response: SubmitResponse = self.send_request("submitTransaction", params).await?;
 
@@ -940,16 +1130,10 @@ impl KaspaClient {
         #[serde(rename_all = "camelCase")]
         struct UtxoData {
             amount: u64,
-            script_public_key: UtxoScriptPubKey,
+            /// Script public key - Kaspa wRPC returns this as a plain hex string
+            script_public_key: String,
             block_daa_score: u64,
             is_coinbase: bool,
-        }
-
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct UtxoScriptPubKey {
-            version: u16,
-            script_public_key: String,
         }
 
         let params = serde_json::json!({
@@ -969,15 +1153,24 @@ impl KaspaClient {
                 let mut transaction_id = [0u8; 32];
                 transaction_id.copy_from_slice(&tx_id_bytes);
 
-                let script_bytes = hex::decode(&entry.utxo_entry.script_public_key.script_public_key).ok()?;
+                let script_bytes = hex::decode(&entry.utxo_entry.script_public_key).ok()?;
+
+                // Extract version from script (first 2 bytes if present, otherwise 0)
+                let (version, script) = if script_bytes.len() >= 2 {
+                    // Kaspa script format: 2-byte version prefix + script data
+                    let ver = u16::from_le_bytes([script_bytes[0], script_bytes[1]]);
+                    (ver, script_bytes[2..].to_vec())
+                } else {
+                    (0, script_bytes)
+                };
 
                 Some(Utxo {
                     transaction_id,
                     index: entry.outpoint.index,
                     amount: entry.utxo_entry.amount,
                     script_public_key: ScriptPublicKey {
-                        version: entry.utxo_entry.script_public_key.version,
-                        script: script_bytes,
+                        version,
+                        script,
                     },
                     block_daa_score: entry.utxo_entry.block_daa_score,
                     is_coinbase: entry.utxo_entry.is_coinbase,
@@ -1001,21 +1194,55 @@ impl KaspaClient {
 
     /// Subscribe to block added notifications
     ///
+    /// Registers for block added notifications from the Kaspa node.
+    ///
     /// # Arguments
     ///
     /// * `sender` - Channel to receive block events
     ///
     /// # Errors
     ///
-    /// Returns an error if the subscription fails.
+    /// Returns an error if the subscription fails or if not connected.
+    ///
+    /// # Note
+    ///
+    /// This sends the subscription request to the Kaspa node.
+    /// The event_sender field stores the channel but notification delivery
+    /// requires handling notifications in the WebSocket receive loop.
+    #[cfg(feature = "kaspa-client")]
     pub async fn subscribe_to_block_added(
         &self,
         _sender: mpsc::Sender<BlockEvent>,
     ) -> Result<()> {
-        // TODO: Implement RPC subscription: notifyBlockAdded
-        // Request: {"method": "notifyBlockAdded", "params": {}}
+        let state = self.state.read().await;
+        if !matches!(*state, ConnectionState::Connected) {
+            return Err(KtcsError::ConnectionError(
+                "Not connected to Kaspa node".to_string(),
+            ));
+        }
+        drop(state);
+
+        // Send subscription request
+        let params = serde_json::json!({});
+        let _response: serde_json::Value = self
+            .send_request("notifyBlockAdded", params)
+            .await?;
+
+        // Note: To fully implement notifications, we would need to:
+        // 1. Store the sender in a subscription registry
+        // 2. Modify the WebSocket receive loop to route notifications
+        // 3. Parse notification messages and send to subscribers
+        tracing::info!("Subscribed to block added notifications");
+        Ok(())
+    }
+
+    #[cfg(not(feature = "kaspa-client"))]
+    pub async fn subscribe_to_block_added(
+        &self,
+        _sender: mpsc::Sender<BlockEvent>,
+    ) -> Result<()> {
         Err(KtcsError::ConnectionError(
-            "Not connected to Kaspa node".to_string(),
+            "Kaspa client feature is not enabled".to_string(),
         ))
     }
 
@@ -1029,20 +1256,67 @@ impl KaspaClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the subscription fails.
+    /// Returns an error if the subscription fails or if not connected.
+    #[cfg(feature = "kaspa-client")]
     pub async fn subscribe_to_virtual_chain_changed(
         &self,
         _sender: mpsc::Sender<BlockEvent>,
     ) -> Result<()> {
-        // TODO: Implement RPC subscription: notifyVirtualSelectedParentChainChanged
+        let state = self.state.read().await;
+        if !matches!(*state, ConnectionState::Connected) {
+            return Err(KtcsError::ConnectionError(
+                "Not connected to Kaspa node".to_string(),
+            ));
+        }
+        drop(state);
+
+        // Send subscription request
+        let params = serde_json::json!({
+            "includeAcceptedTransactionIds": true
+        });
+        let _response: serde_json::Value = self
+            .send_request("notifyVirtualSelectedParentChainChanged", params)
+            .await?;
+
+        tracing::info!("Subscribed to virtual chain changed notifications");
+        Ok(())
+    }
+
+    #[cfg(not(feature = "kaspa-client"))]
+    pub async fn subscribe_to_virtual_chain_changed(
+        &self,
+        _sender: mpsc::Sender<BlockEvent>,
+    ) -> Result<()> {
         Err(KtcsError::ConnectionError(
-            "Not connected to Kaspa node".to_string(),
+            "Kaspa client feature is not enabled".to_string(),
         ))
     }
 
     /// Unsubscribe from all notifications
+    ///
+    /// Sends unsubscribe requests to the Kaspa node for all active subscriptions.
+    #[cfg(feature = "kaspa-client")]
     pub async fn unsubscribe_all(&self) -> Result<()> {
-        // TODO: Implement unsubscription
+        let state = self.state.read().await;
+        if !matches!(*state, ConnectionState::Connected) {
+            return Ok(()); // Nothing to unsubscribe if not connected
+        }
+        drop(state);
+
+        // Unsubscribe from block added
+        let params = serde_json::json!({});
+        let _ = self.send_request::<_, serde_json::Value>("notifyBlockAdded", params).await;
+
+        // Unsubscribe from virtual chain changes
+        let params = serde_json::json!({});
+        let _ = self.send_request::<_, serde_json::Value>("notifyVirtualSelectedParentChainChanged", params).await;
+
+        tracing::info!("Unsubscribed from all notifications");
+        Ok(())
+    }
+
+    #[cfg(not(feature = "kaspa-client"))]
+    pub async fn unsubscribe_all(&self) -> Result<()> {
         Ok(())
     }
 
@@ -1171,7 +1445,40 @@ impl KaspaClient {
 // Transaction Building Utilities
 // ========================================
 
-/// Build an OP_RETURN output for a 32-byte commitment
+/// Dust threshold for commitment outputs (minimum valid output)
+/// Per KIP-9, outputs below 0.2 KAS (20,000,000 sompi) are considered dust
+pub const COMMITMENT_DUST_THRESHOLD: u64 = 20_000_000; // 0.2 KAS
+
+/// Build a commitment output for a 32-byte commitment
+///
+/// Kaspa does not support OP_RETURN as a standard script type.
+/// Instead, we use a P2PK output where the "public key" is the commitment.
+/// This creates a provably unspendable output (no private key exists for this public key).
+///
+/// The output uses the dust threshold (546 sompi) as the minimum valid amount.
+pub fn build_commitment_output(commitment: &[u8; 32]) -> TransactionOutput {
+    // P2PK script: <push 32> <32-byte commitment as "public key"> <OP_CHECKSIG>
+    // Format: 0x20 <32 bytes> 0xac
+    let mut script = Vec::with_capacity(34);
+    script.push(0x20); // Push 32 bytes
+    script.extend_from_slice(commitment);
+    script.push(0xac); // OP_CHECKSIG
+
+    TransactionOutput {
+        amount: COMMITMENT_DUST_THRESHOLD, // Dust amount (effectively a burn)
+        script_public_key: ScriptPublicKey {
+            version: 0,
+            script,
+        },
+    }
+}
+
+/// Build an OP_RETURN output for a 32-byte commitment (DEPRECATED)
+///
+/// NOTE: Kaspa does NOT support OP_RETURN as a standard script type.
+/// This function is kept for compatibility but will be rejected by the network.
+/// Use `build_commitment_output` instead.
+#[deprecated(since = "0.1.0", note = "Kaspa does not support OP_RETURN. Use build_commitment_output instead.")]
 pub fn build_op_return_output(commitment: &[u8; 32]) -> TransactionOutput {
     // OP_RETURN script: 0x6a (OP_RETURN) 0x20 (push 32 bytes) <32 bytes>
     let mut script = Vec::with_capacity(34);

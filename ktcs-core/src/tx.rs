@@ -26,7 +26,7 @@
 
 use crate::error::{KtcsError, Result};
 use crate::kaspa::{
-    build_op_return_output, ScriptPublicKey, Transaction, TransactionInput, TransactionOutput,
+    build_commitment_output, ScriptPublicKey, Transaction, TransactionInput, TransactionOutput,
     Utxo,
 };
 use crate::merkle::sha256;
@@ -194,32 +194,31 @@ impl TransactionBuilder {
             });
         }
 
-        // Build OP_RETURN output
-        let op_return_output = if self.include_ktcs_magic {
-            build_op_return_with_magic(&commitment)
-        } else {
-            build_op_return_output(&commitment)
-        };
+        // Build commitment output (P2PK with commitment as "public key")
+        // Note: Kaspa does NOT support OP_RETURN, so we use a P2PK burn output
+        let commitment_output = build_commitment_output(&commitment);
+        let commitment_amount = commitment_output.amount; // Dust amount (546 sompi)
 
         // Calculate transaction mass (for fee calculation)
         // Kaspa uses "mass" instead of "size" for fee calculation
         let estimated_mass = estimate_transaction_mass(
             self.inputs.len(),
-            2, // OP_RETURN + change
-            self.include_ktcs_magic,
+            2, // commitment output + change
+            false, // No magic prefix
         );
 
         let fee = estimated_mass * self.fee_per_gram;
+        let total_required = fee + commitment_amount;
 
         // Calculate change
-        if total_input < fee {
+        if total_input < total_required {
             return Err(KtcsError::Other(format!(
-                "Insufficient funds: have {} sompi, need {} sompi for fee",
-                total_input, fee
+                "Insufficient funds: have {} sompi, need {} sompi (fee: {}, commitment: {})",
+                total_input, total_required, fee, commitment_amount
             )));
         }
 
-        let change_amount = total_input - fee;
+        let change_amount = total_input - total_required;
 
         // Check dust threshold
         if change_amount > 0 && change_amount < DUST_THRESHOLD {
@@ -230,7 +229,7 @@ impl TransactionBuilder {
         }
 
         // Add outputs
-        tx.add_output(op_return_output);
+        tx.add_output(commitment_output);
 
         if change_amount > 0 {
             tx.add_output(TransactionOutput {
@@ -239,7 +238,7 @@ impl TransactionBuilder {
             });
         }
 
-        let total_output = change_amount; // OP_RETURN has 0 value
+        let total_output = commitment_amount + change_amount;
 
         Ok(CommitmentTransaction {
             transaction: tx,
@@ -441,6 +440,15 @@ pub fn generate_nonce() -> Result<[u8; 16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wallet::KaspaWallet;
+
+    /// Test private key for generating valid addresses
+    const TEST_PRIVATE_KEY: [u8; 32] = [
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+    ];
 
     fn create_test_utxo(amount: u64, index: u32) -> Utxo {
         Utxo {
@@ -456,15 +464,20 @@ mod tests {
         }
     }
 
+    fn test_wallet() -> KaspaWallet {
+        KaspaWallet::from_private_key(&TEST_PRIVATE_KEY, "testnet").unwrap()
+    }
+
     #[test]
     fn test_transaction_builder() {
+        let wallet = test_wallet();
         let commitment = [0xab; 32];
         let utxo = create_test_utxo(100_000_000, 0); // 1 KAS
 
         let result = TransactionBuilder::new()
             .commitment(&commitment)
             .add_input(utxo)
-            .change_address("kaspa:qztest123")
+            .change_address(wallet.address())
             .fee_per_gram(1)
             .build();
 
@@ -477,11 +490,12 @@ mod tests {
 
     #[test]
     fn test_transaction_builder_no_commitment() {
+        let wallet = test_wallet();
         let utxo = create_test_utxo(100_000_000, 0);
 
         let result = TransactionBuilder::new()
             .add_input(utxo)
-            .change_address("kaspa:qztest123")
+            .change_address(wallet.address())
             .build();
 
         assert!(result.is_err());
@@ -490,11 +504,12 @@ mod tests {
 
     #[test]
     fn test_transaction_builder_no_inputs() {
+        let wallet = test_wallet();
         let commitment = [0xab; 32];
 
         let result = TransactionBuilder::new()
             .commitment(&commitment)
-            .change_address("kaspa:qztest123")
+            .change_address(wallet.address())
             .build();
 
         assert!(result.is_err());
@@ -503,13 +518,14 @@ mod tests {
 
     #[test]
     fn test_transaction_builder_insufficient_funds() {
+        let wallet = test_wallet();
         let commitment = [0xab; 32];
         let utxo = create_test_utxo(100, 0); // Very small amount
 
         let result = TransactionBuilder::new()
             .commitment(&commitment)
             .add_input(utxo)
-            .change_address("kaspa:qztest123")
+            .change_address(wallet.address())
             .fee_per_gram(1000) // High fee rate
             .build();
 
@@ -578,24 +594,29 @@ mod tests {
 
     #[test]
     fn test_address_to_script() {
-        // P2PKH address
-        let result = address_to_script("kaspa:qztest123");
+        // Generate a valid Schnorr address using test wallet
+        let wallet = test_wallet();
+        let address = wallet.address();
+
+        // Test Schnorr address conversion (32-byte pubkey)
+        let result = address_to_script(address);
         assert!(result.is_ok());
         let script = result.unwrap();
-        assert_eq!(script.script[0], 0x76); // OP_DUP
 
-        // P2SH address
-        let result = address_to_script("kaspa:pztest456");
-        assert!(result.is_ok());
-        let script = result.unwrap();
-        assert_eq!(script.script[0], 0xa9); // OP_HASH160
+        // Verify Kaspa Schnorr script format: <push 32> <32-byte pubkey> OP_CHECKSIG
+        assert_eq!(script.script[0], 0x20); // Push 32 bytes
+        assert_eq!(script.script.len(), 34); // 1 + 32 + 1
+        assert_eq!(script.script[33], 0xac); // OP_CHECKSIG
 
-        // Invalid prefix
-        let result = address_to_script("bitcoin:abc123");
+        // The pubkey in the script should match the wallet's public key
+        assert_eq!(&script.script[1..33], &wallet.public_key());
+
+        // Invalid bech32m format should fail
+        let result = address_to_script("notanaddress");
         assert!(result.is_err());
 
-        // Invalid format
-        let result = address_to_script("notanaddress");
+        // Invalid checksum should fail
+        let result = address_to_script("kaspa:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq");
         assert!(result.is_err());
     }
 

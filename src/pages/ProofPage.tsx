@@ -1,5 +1,5 @@
 import { useParams } from 'react-router-dom'
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Download, RefreshCw, Share2, ExternalLink, Copy, CheckCircle, Clock, Loader2, Wifi, WifiOff } from 'lucide-react'
 import Button from '../components/ui/Button'
 import { useStampStore } from '../stores/stamp'
@@ -20,53 +20,52 @@ function ProofPage(): JSX.Element {
   const [response, setResponse] = useState<StampResponse | null>(stampResponse)
   const [wsConnected, setWsConnected] = useState(false)
 
-  // Keep client and unsubscribe refs stable across renders
+  // Keep refs stable across renders - these don't trigger re-renders
   const clientRef = useRef<CalendarClient | null>(null)
   const unsubscribeRef = useRef<(() => void) | null>(null)
+  const responseRef = useRef<StampResponse | null>(response)
+  const isSubscribedRef = useRef(false)
 
-  // Get or create the calendar client
-  const getClient = useCallback(() => {
-    if (!clientRef.current) {
-      clientRef.current = createCalendarClient(CALENDAR_URL)
-    }
-    return clientRef.current
-  }, [])
-
-  // Handle WebSocket confirmation - update state when confirmation arrives
-  const handleWsConfirmation = useCallback((msg: WsConfirmedMessage) => {
-    console.log('[KTCS] WebSocket confirmation received:', msg.proof_id)
-
-    const confirmedResponse: StampResponse = {
-      id: msg.proof_id,
-      status: 'confirmed',
-      submitted_at: response?.submitted_at || new Date().toISOString(),
-      confirmed_at: new Date(msg.timestamp).toISOString(),
-      daa_score: msg.daa_score,
-      blue_score: msg.blue_score,
-      block_hash: msg.block_hash,
-      tx_hash: response?.tx_hash,
-      proof: msg.proof,
-    }
-
-    setResponse(confirmedResponse)
-    setStampResponse(confirmedResponse)
-    setConfirmedProof(msg.proof)
-    setWsConnected(false)
-  }, [response, setStampResponse, setConfirmedProof])
+  // Update responseRef when response changes (for use in callbacks)
+  responseRef.current = response
 
   // Subscribe to WebSocket for real-time confirmation
+  // IMPORTANT: Only depend on `id` to prevent re-subscription loops
   useEffect(() => {
     if (!id) return
 
-    // If we already have the response from the store and it's confirmed, use it
-    if (stampResponse && stampResponse.id === id) {
-      setResponse(stampResponse)
-      if (stampResponse.status === 'confirmed') return
+    // Create client once
+    if (!clientRef.current) {
+      clientRef.current = createCalendarClient(CALENDAR_URL)
     }
+    const client = clientRef.current
 
-    const client = getClient()
     let pollTimeout: ReturnType<typeof setTimeout> | null = null
     let isMounted = true
+
+    // Handle WebSocket confirmation - uses refs to avoid stale closures
+    const handleWsConfirmation = (msg: WsConfirmedMessage) => {
+      if (!isMounted) return
+      console.log('[KTCS] WebSocket confirmation received:', msg.proof_id)
+
+      const confirmedResponse: StampResponse = {
+        id: msg.proof_id,
+        status: 'confirmed',
+        submitted_at: responseRef.current?.submitted_at || new Date().toISOString(),
+        confirmed_at: new Date(msg.timestamp).toISOString(),
+        daa_score: msg.daa_score,
+        blue_score: msg.blue_score,
+        block_hash: msg.block_hash,
+        tx_hash: responseRef.current?.tx_hash,
+        proof: msg.proof,
+      }
+
+      setResponse(confirmedResponse)
+      setStampResponse(confirmedResponse)
+      setConfirmedProof(msg.proof)
+      setWsConnected(false)
+      isSubscribedRef.current = false
+    }
 
     // Fetch initial stamp status
     const fetchStamp = async () => {
@@ -83,20 +82,22 @@ function ProofPage(): JSX.Element {
           setConfirmedProof(data.proof)
         }
 
-        // If confirmed, we're done
+        // If confirmed, we're done - no need to subscribe or poll
         if (data.status === 'confirmed') {
+          isSubscribedRef.current = false
           return
         }
 
         // Subscribe to WebSocket for real-time confirmation (only once)
-        if (!unsubscribeRef.current && isMounted) {
+        if (!isSubscribedRef.current && isMounted) {
           console.log('[KTCS] Subscribing to WebSocket for:', id)
           setWsConnected(true)
+          isSubscribedRef.current = true
           unsubscribeRef.current = client.subscribeToConfirmation(id, handleWsConfirmation)
         }
 
         // Fallback polling in case WebSocket fails (less frequent: 5s)
-        if (isMounted) {
+        if (isMounted && data.status !== 'confirmed') {
           pollTimeout = setTimeout(fetchStamp, 5000)
         }
       } catch (err) {
@@ -104,11 +105,17 @@ function ProofPage(): JSX.Element {
         console.error('[KTCS] Failed to fetch stamp:', err)
         setError(err instanceof Error ? err.message : 'Failed to fetch stamp')
 
-        // Retry on error with polling
+        // Retry on error with longer delay (10s to avoid hammering)
         if (isMounted) {
-          pollTimeout = setTimeout(fetchStamp, 3000)
+          pollTimeout = setTimeout(fetchStamp, 10000)
         }
       }
+    }
+
+    // Check if we already have confirmed data in store
+    if (stampResponse && stampResponse.id === id && stampResponse.status === 'confirmed') {
+      setResponse(stampResponse)
+      return // No cleanup needed, no subscriptions made
     }
 
     fetchStamp()
@@ -123,9 +130,11 @@ function ProofPage(): JSX.Element {
         console.log('[KTCS] Unsubscribing from WebSocket for:', id)
         unsubscribeRef.current()
         unsubscribeRef.current = null
+        isSubscribedRef.current = false
       }
     }
-  }, [id, stampResponse, setStampResponse, setConfirmedProof, getClient, handleWsConfirmation])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]) // Only re-run when id changes - use refs for everything else
 
   const isPending = !response || response.status !== 'confirmed'
 
@@ -171,7 +180,10 @@ function ProofPage(): JSX.Element {
       daaScore: response?.daa_score || 0,
       blueScore: response?.blue_score || 0,
       timestamp: response?.confirmed_at || new Date().toISOString(),
-      parents: [] as ParentBlock[],
+      parents: (response?.parent_hashes || []).map((hash) => ({
+        hash,
+        daaScore: response?.daa_score ? response.daa_score - 1 : 0,
+      })),
     },
     tx: {
       hash: response?.tx_hash || 'pending...',

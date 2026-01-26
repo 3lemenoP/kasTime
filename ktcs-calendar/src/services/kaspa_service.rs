@@ -9,8 +9,9 @@
 
 use ktcs_core::{
     BlockInfo, DagInfo, KaspaClient, KaspaClientConfig, TransactionBuilder,
-    Utxo, format_blue_work, subtract_blue_work,
+    Utxo, format_blue_work, subtract_blue_work, sign_transaction,
 };
+use ktcs_core::wallet::KaspaWallet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -21,7 +22,6 @@ pub type Result<T> = std::result::Result<T, KaspaServiceError>;
 
 /// Errors from the Kaspa service
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub enum KaspaServiceError {
     #[error("Not connected to Kaspa node")]
     NotConnected,
@@ -82,6 +82,9 @@ pub struct KaspaServiceConfig {
     pub fee_per_gram: u64,
     /// Include KTCS magic prefix in OP_RETURN
     pub include_magic: bool,
+    /// Calendar wallet private key (hex-encoded, 64 chars)
+    /// Required when mock_mode is false
+    pub wallet_key: Option<String>,
     /// Enable mock mode (for testing only - DISABLES BLOCKCHAIN ANCHORING)
     /// WARNING: When enabled, timestamps are NOT anchored to the blockchain!
     pub mock_mode: bool,
@@ -96,6 +99,7 @@ impl Default for KaspaServiceConfig {
             confirmation_timeout_ms: 60_000, // 1 minute
             fee_per_gram: 1,
             include_magic: false,
+            wallet_key: None,
             mock_mode: false, // Disabled by default - real blockchain required
         }
     }
@@ -158,9 +162,55 @@ impl KaspaServiceConfig {
             ));
         }
 
-        // Warn if mock mode is enabled
+        // CRITICAL: Require wallet key when mock mode is disabled
+        if !self.mock_mode && self.wallet_key.is_none() {
+            return Err(KaspaServiceError::InvalidConfig(
+                "CALENDAR_WALLET_KEY is required when KTCS_MOCK_MODE is false. \
+                 Set KTCS_MOCK_MODE=true for testing without a wallet, or provide a wallet key.".to_string()
+            ));
+        }
+
+        // Validate wallet key format if provided
+        if let Some(ref key) = self.wallet_key {
+            if key.len() != 64 {
+                return Err(KaspaServiceError::InvalidConfig(
+                    format!("CALENDAR_WALLET_KEY must be 64 hex characters (32 bytes), got {} chars", key.len())
+                ));
+            }
+            if hex::decode(key).is_err() {
+                return Err(KaspaServiceError::InvalidConfig(
+                    "CALENDAR_WALLET_KEY is not valid hex".to_string()
+                ));
+            }
+        }
+
+        // CRITICAL: Prevent mock mode in production environments
         if self.mock_mode {
-            warn!("Configuration validation passed, but MOCK MODE is enabled!");
+            // Check for production environment indicator
+            let is_production = std::env::var("KTCS_ENVIRONMENT")
+                .map(|v| v.to_lowercase() == "production")
+                .unwrap_or(false);
+
+            if is_production {
+                return Err(KaspaServiceError::InvalidConfig(
+                    "SECURITY ERROR: Mock mode cannot be enabled in production environment. \
+                     Set KTCS_ENVIRONMENT to 'development' or 'testing' to use mock mode.".to_string()
+                ));
+            }
+
+            // Prevent mock mode on mainnet regardless of environment
+            if self.network == "mainnet" {
+                return Err(KaspaServiceError::InvalidConfig(
+                    "SECURITY ERROR: Mock mode cannot be used with mainnet. \
+                     Use a testnet for testing purposes.".to_string()
+                ));
+            }
+
+            // Log prominent warning for non-production environments
+            error!("==================================================");
+            error!("MOCK MODE ENABLED - Timestamps will NOT be anchored!");
+            error!("This should ONLY be used for testing purposes!");
+            error!("==================================================");
         }
 
         Ok(())
@@ -190,6 +240,16 @@ impl KaspaServiceConfig {
             .map(|s| s == "true" || s == "1")
             .unwrap_or(false);
 
+        // Load wallet private key from environment
+        // SECURITY: This should be kept secret! Use proper secret management in production.
+        let wallet_key = std::env::var("CALENDAR_WALLET_KEY")
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        if wallet_key.is_some() {
+            info!("Calendar wallet key loaded from CALENDAR_WALLET_KEY");
+        }
+
         // SECURITY WARNING: Mock mode should ONLY be enabled for testing
         // When enabled, timestamps are NOT anchored to the blockchain!
         let mock_mode = std::env::var("KTCS_MOCK_MODE")
@@ -209,6 +269,7 @@ impl KaspaServiceConfig {
             confirmation_timeout_ms,
             fee_per_gram,
             include_magic,
+            wallet_key,
             mock_mode,
         })
     }
@@ -221,6 +282,8 @@ impl KaspaServiceConfig {
 pub struct KaspaService {
     config: KaspaServiceConfig,
     client: KaspaClient,
+    /// Calendar wallet for signing transactions (None in mock mode)
+    wallet: Option<KaspaWallet>,
     // Cached UTXOs for the wallet
     utxos: Arc<RwLock<Vec<Utxo>>>,
     // Current chain state
@@ -231,29 +294,65 @@ pub struct KaspaService {
 
 impl KaspaService {
     /// Create a new Kaspa service with the given configuration
-    pub fn new(config: KaspaServiceConfig) -> Self {
+    pub fn new(config: KaspaServiceConfig) -> Result<Self> {
         let client_config = KaspaClientConfig {
             rpc_url: config.rpc_url.clone(),
             network: Some(config.network.clone()),
             connect_timeout_ms: 10_000,
             request_timeout_ms: 30_000,
             auto_reconnect: true,
+            use_resolver: false, // We use explicit RPC URL from config
         };
 
-        Self {
-            config,
+        // Initialize wallet if key is provided
+        let wallet = if let Some(ref key_hex) = config.wallet_key {
+            let wallet = KaspaWallet::from_hex(key_hex, &config.network)
+                .map_err(|e| KaspaServiceError::InvalidConfig(
+                    format!("Failed to load wallet from CALENDAR_WALLET_KEY: {}", e)
+                ))?;
+
+            info!("Calendar wallet initialized: {}", wallet.address());
+
+            // Warn if wallet_address in config differs from derived address
+            if !config.wallet_address.is_empty() && config.wallet_address != wallet.address() {
+                warn!(
+                    "CALENDAR_WALLET_ADDRESS ({}) differs from derived address ({}). Using derived address.",
+                    config.wallet_address,
+                    wallet.address()
+                );
+            }
+
+            Some(wallet)
+        } else {
+            if !config.mock_mode {
+                warn!("No wallet configured - real transactions will fail!");
+            }
+            None
+        };
+
+        // Get wallet address (from wallet or config)
+        let wallet_address = wallet.as_ref()
+            .map(|w| w.address().to_string())
+            .unwrap_or_else(|| config.wallet_address.clone());
+
+        Ok(Self {
+            config: KaspaServiceConfig {
+                wallet_address,
+                ..config
+            },
             client: KaspaClient::new(client_config),
+            wallet,
             utxos: Arc::new(RwLock::new(Vec::new())),
             dag_info: Arc::new(RwLock::new(None)),
             connected: Arc::new(RwLock::new(false)),
-        }
+        })
     }
 
     /// Create a service from environment configuration
     #[allow(dead_code)]
     pub fn from_env() -> Result<Self> {
         let config = KaspaServiceConfig::from_env()?;
-        Ok(Self::new(config))
+        Self::new(config)
     }
 
     /// Connect to the Kaspa node with retry logic
@@ -420,14 +519,32 @@ impl KaspaService {
             tx.fee, tx.change_amount
         );
 
-        // Submit transaction with retry logic for transient failures
-        let transaction = tx.transaction;
+        // Get wallet for signing
+        let wallet = self.wallet.as_ref()
+            .ok_or_else(|| KaspaServiceError::InvalidConfig(
+                "Cannot submit real transaction: no wallet configured. Set CALENDAR_WALLET_KEY.".to_string()
+            ))?;
+
+        // Sign the transaction
+        let unsigned_tx = tx.transaction;
+        let signed_tx = sign_transaction(&unsigned_tx, wallet, &utxos)
+            .map_err(|e| KaspaServiceError::SubmissionFailed(
+                format!("Transaction signing failed: {}", e)
+            ))?;
+
+        debug!(
+            "Transaction signed: {} inputs, signature lengths: {:?}",
+            signed_tx.inputs.len(),
+            signed_tx.inputs.iter().map(|i| i.signature_script.len()).collect::<Vec<_>>()
+        );
+
+        // Submit signed transaction with retry logic for transient failures
         let tx_hash = Self::retry_with_backoff(
             "Transaction submission",
             3,  // max 3 retries
             500, // start with 500ms delay
             || async {
-                self.client.submit_transaction(transaction.clone()).await
+                self.client.submit_transaction(signed_tx.clone()).await
                     .map_err(|e| KaspaServiceError::SubmissionFailed(e.to_string()))
             }
         ).await?;
@@ -686,8 +803,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_submission() {
-        let config = KaspaServiceConfig::default();
-        let service = KaspaService::new(config);
+        let config = KaspaServiceConfig {
+            mock_mode: true,
+            ..Default::default()
+        };
+        let service = KaspaService::new(config).expect("Failed to create service");
 
         let commitment = [0xab; 32];
         let result = service.submit_commitment_mock(commitment).await;

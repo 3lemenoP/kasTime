@@ -23,6 +23,9 @@ export class CalendarClient {
   private wsUrl: string;
   private ws: WebSocket | null = null;
   private subscriptions: Map<string, (msg: WsConfirmedMessage) => void> = new Map();
+  private reconnectAttempts = 0;
+  private maxReconnectDelay = 30000; // Max 30 seconds between attempts
+  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Create a new calendar client
@@ -179,9 +182,23 @@ export class CalendarClient {
       return;
     }
 
+    // Don't create new connection if one is already connecting
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+
+    // Clear any pending reconnect
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+
     this.ws = new WebSocket(this.wsUrl);
 
     this.ws.onopen = () => {
+      console.log('[KTCS] WebSocket connected');
+      // Reset reconnect attempts on successful connection
+      this.reconnectAttempts = 0;
       // Re-subscribe to all pending subscriptions
       for (const proofId of this.subscriptions.keys()) {
         this.ws?.send(JSON.stringify({ type: 'subscribe', proof_id: proofId }));
@@ -208,18 +225,28 @@ export class CalendarClient {
     };
 
     this.ws.onclose = () => {
-      // Attempt reconnect if there are active subscriptions
+      this.ws = null;
+      // Attempt reconnect with exponential backoff if there are active subscriptions
       if (this.subscriptions.size > 0) {
-        setTimeout(() => this.ensureWebSocket(), 1000);
+        this.reconnectAttempts++;
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (capped)
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelay);
+        console.log(`[KTCS] WebSocket closed, reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+        this.reconnectTimeout = setTimeout(() => this.ensureWebSocket(), delay);
       }
     };
   }
 
   private closeWebSocket() {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
+    this.reconnectAttempts = 0;
   }
 
   /**

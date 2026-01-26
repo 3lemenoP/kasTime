@@ -242,24 +242,40 @@ fn deserialize_attestation(data: &[u8], cursor: usize) -> Result<(Attestation, u
             let version = data[pos];
             pos += 1;
 
-            let daa_score = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+            let daa_score = u64::from_le_bytes(
+                data[pos..pos + 8]
+                    .try_into()
+                    .map_err(|_| KtcsError::InvalidData("Invalid daa_score bytes".to_string()))?
+            );
             pos += 8;
 
-            let blue_score = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+            let blue_score = u64::from_le_bytes(
+                data[pos..pos + 8]
+                    .try_into()
+                    .map_err(|_| KtcsError::InvalidData("Invalid blue_score bytes".to_string()))?
+            );
             pos += 8;
 
             let mut block_hash = [0u8; 32];
             block_hash.copy_from_slice(&data[pos..pos + 32]);
             pos += 32;
 
-            let timestamp = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+            let timestamp = u64::from_le_bytes(
+                data[pos..pos + 8]
+                    .try_into()
+                    .map_err(|_| KtcsError::InvalidData("Invalid timestamp bytes".to_string()))?
+            );
             pos += 8;
 
             let mut tx_hash = [0u8; 32];
             tx_hash.copy_from_slice(&data[pos..pos + 32]);
             pos += 32;
 
-            let tx_index = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+            let tx_index = u32::from_le_bytes(
+                data[pos..pos + 4]
+                    .try_into()
+                    .map_err(|_| KtcsError::InvalidData("Invalid tx_index bytes".to_string()))?
+            );
             pos += 4;
 
             let mut blue_work = [0u8; 32];
@@ -296,7 +312,11 @@ fn deserialize_attestation(data: &[u8], cursor: usize) -> Result<(Attestation, u
             if data.len() < pos + 4 {
                 return Err(KtcsError::UnexpectedEof);
             }
-            let block_height = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+            let block_height = u32::from_le_bytes(
+                data[pos..pos + 4]
+                    .try_into()
+                    .map_err(|_| KtcsError::InvalidData("Invalid block_height bytes".to_string()))?
+            );
             pos += 4;
             Attestation::Bitcoin(BitcoinAttestation { block_height })
         }
