@@ -37,9 +37,11 @@
 
 // Core modules (always available)
 pub mod error;
+pub mod kaspa_types;
 pub mod merkle;
 pub mod ops;
 pub mod proof;
+pub mod tx_builder;
 pub mod types;
 pub mod verify;
 pub mod wallet;
@@ -65,12 +67,29 @@ pub use types::{
 };
 pub use verify::{verify_proof, AttestationInfo, ThermodynamicMetrics, VerificationResult};
 pub use wallet::KaspaWallet;
-#[cfg(feature = "kaspa-client")]
+// Sighash functions are pure computation - available for both kaspa-client and wasm
 pub use wallet::{
-    compute_kaspa_sighash, SigHashType, SighashInput, SighashOutput, SighashTransaction,
+    compute_kaspa_sighash, decode_address, SigHashType, SighashInput, SighashOutput,
+    SighashTransaction,
+};
+
+// Kaspa types - always available (WASM-compatible)
+pub use kaspa_types::{
+    build_commitment_output, extract_commitment_from_output, BlockEvent, BlockInfo,
+    ConnectionState, DagInfo, ScriptPublicKey, Transaction, TransactionInfo, TransactionInput,
+    TransactionOutput, Utxo, COMMITMENT_BURN_AMOUNT, DUST_THRESHOLD as KASPA_DUST_THRESHOLD,
+};
+
+// Transaction builder - always available (WASM-compatible)
+pub use tx_builder::{
+    address_to_script as build_address_script, create_commitment as build_commitment,
+    select_utxos as select_utxos_for_tx, CommitmentTransaction, TransactionBuilder,
+    TransferTransaction, TransferTransactionBuilder, DEFAULT_FEE_PER_GRAM, DUST_THRESHOLD,
+    KTCS_MAGIC_PREFIX, MAX_OP_RETURN_SIZE, MIN_FEE_PER_GRAM,
 };
 
 // Kaspa client re-exports (feature-gated)
+// Note: Types like Transaction, Utxo, etc. are now in kaspa_types (always available)
 #[cfg(feature = "kaspa-client")]
 pub use direct::{
     complete_stamp, create_pending_stamp, prepare_direct_stamp, prepare_direct_stamp_offline,
@@ -78,20 +97,11 @@ pub use direct::{
 };
 #[cfg(feature = "kaspa-client")]
 pub use kaspa::{
-    add_blue_work, build_op_return_output, compare_blue_work, extract_commitment_from_tx,
-    format_blue_work, subtract_blue_work, BlockEvent, BlockInfo, ConnectionState, DagInfo,
-    KaspaClient, KaspaClientConfig, ScriptPublicKey, Transaction, TransactionInfo,
-    TransactionInput, TransactionOutput, Utxo, DEFAULT_RPC_PORT, TESTNET_RPC_PORT,
+    add_blue_work, compare_blue_work, format_blue_work, subtract_blue_work, KaspaClient,
+    KaspaClientConfig, DEFAULT_RPC_PORT, TESTNET_RPC_PORT,
 };
 #[cfg(feature = "kaspa-client")]
 pub use resolver::{resolve_url, Resolver};
-#[cfg(feature = "kaspa-client")]
-pub use tx::{
-    address_to_script, select_utxos, CommitmentTransaction, TransactionBuilder,
-    TransferTransaction, TransferTransactionBuilder,
-    DEFAULT_FEE_PER_GRAM, DUST_THRESHOLD, KTCS_MAGIC_PREFIX, MAX_OP_RETURN_SIZE,
-    MIN_FEE_PER_GRAM,
-};
 
 // Platform-specific re-exports
 #[cfg(all(feature = "kaspa-client", not(target_arch = "wasm32")))]
