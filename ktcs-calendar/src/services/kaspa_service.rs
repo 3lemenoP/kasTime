@@ -74,7 +74,7 @@ pub struct KaspaServiceConfig {
     pub rpc_url: String,
     /// Network name (mainnet, testnet-11, etc.)
     pub network: String,
-    /// Calendar wallet address
+    /// Calendar wallet address (STAMP wallet)
     pub wallet_address: String,
     /// Confirmation timeout in milliseconds
     pub confirmation_timeout_ms: u64,
@@ -82,12 +82,25 @@ pub struct KaspaServiceConfig {
     pub fee_per_gram: u64,
     /// Include KTCS magic prefix in OP_RETURN
     pub include_magic: bool,
-    /// Calendar wallet private key (hex-encoded, 64 chars)
+    /// Calendar wallet private key (hex-encoded, 64 chars) - STAMP wallet
     /// Required when mock_mode is false
     pub wallet_key: Option<String>,
     /// Enable mock mode (for testing only - DISABLES BLOCKCHAIN ANCHORING)
     /// WARNING: When enabled, timestamps are NOT anchored to the blockchain!
     pub mock_mode: bool,
+
+    // --- Dual-Wallet Recycling Configuration ---
+
+    /// Return wallet private key (hex-encoded, 64 chars)
+    /// When set, change from STAMP transactions goes here and is automatically
+    /// recycled back to STAMP wallet.
+    pub return_wallet_key: Option<String>,
+    /// Return wallet address (auto-derived from key if not set)
+    pub return_wallet_address: Option<String>,
+    /// Minimum balance in sompi before recycling (default: 1 KAS = 100,000,000)
+    pub recycle_threshold: u64,
+    /// Polling interval for the recycle loop in seconds
+    pub recycle_poll_interval_secs: u64,
 }
 
 impl Default for KaspaServiceConfig {
@@ -101,6 +114,11 @@ impl Default for KaspaServiceConfig {
             include_magic: false,
             wallet_key: None,
             mock_mode: false, // Disabled by default - real blockchain required
+            // Dual-wallet recycling (disabled by default)
+            return_wallet_key: None,
+            return_wallet_address: None,
+            recycle_threshold: 100_000_000, // 1 KAS
+            recycle_poll_interval_secs: 30,
         }
     }
 }
@@ -184,6 +202,37 @@ impl KaspaServiceConfig {
             }
         }
 
+        // Validate return wallet key if provided (dual-wallet recycling)
+        if let Some(ref key) = self.return_wallet_key {
+            if key.len() != 64 {
+                return Err(KaspaServiceError::InvalidConfig(
+                    format!("RETURN_WALLET_KEY must be 64 hex characters (32 bytes), got {} chars", key.len())
+                ));
+            }
+            if hex::decode(key).is_err() {
+                return Err(KaspaServiceError::InvalidConfig(
+                    "RETURN_WALLET_KEY is not valid hex".to_string()
+                ));
+            }
+            // Ensure RETURN wallet is different from STAMP wallet
+            if let Some(ref stamp_key) = self.wallet_key {
+                if key == stamp_key {
+                    return Err(KaspaServiceError::InvalidConfig(
+                        "RETURN_WALLET_KEY must be different from CALENDAR_WALLET_KEY".to_string()
+                    ));
+                }
+            }
+        }
+
+        // Validate recycle threshold (warn if too low)
+        if self.return_wallet_key.is_some() && self.recycle_threshold < 50_000_000 {
+            warn!(
+                "Recycle threshold {} sompi ({:.2} KAS) is low - may result in high fee percentage",
+                self.recycle_threshold,
+                self.recycle_threshold as f64 / 100_000_000.0
+            );
+        }
+
         // CRITICAL: Prevent mock mode in production environments
         if self.mock_mode {
             // Check for production environment indicator
@@ -262,6 +311,29 @@ impl KaspaServiceConfig {
             warn!("This should ONLY be used for testing purposes.");
         }
 
+        // Load return wallet key (dual-wallet recycling)
+        let return_wallet_key = std::env::var("RETURN_WALLET_KEY")
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        if return_wallet_key.is_some() {
+            info!("Return wallet key loaded from RETURN_WALLET_KEY (dual-wallet recycling enabled)");
+        }
+
+        let return_wallet_address = std::env::var("RETURN_WALLET_ADDRESS")
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        let recycle_threshold = std::env::var("RECYCLE_THRESHOLD_SOMPI")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100_000_000); // 1 KAS default
+
+        let recycle_poll_interval_secs = std::env::var("RECYCLE_POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+
         Ok(Self {
             rpc_url,
             network,
@@ -271,6 +343,10 @@ impl KaspaServiceConfig {
             include_magic,
             wallet_key,
             mock_mode,
+            return_wallet_key,
+            return_wallet_address,
+            recycle_threshold,
+            recycle_poll_interval_secs,
         })
     }
 }
@@ -281,15 +357,23 @@ impl KaspaServiceConfig {
 /// for timestamp commitment and verification.
 pub struct KaspaService {
     config: KaspaServiceConfig,
-    client: KaspaClient,
-    /// Calendar wallet for signing transactions (None in mock mode)
+    /// Kaspa RPC client
+    pub client: KaspaClient,
+    /// Calendar wallet for signing transactions (STAMP wallet, None in mock mode)
     wallet: Option<KaspaWallet>,
-    // Cached UTXOs for the wallet
+    /// Cached UTXOs for the STAMP wallet
     utxos: Arc<RwLock<Vec<Utxo>>>,
-    // Current chain state
+    /// Current chain state
     dag_info: Arc<RwLock<Option<DagInfo>>>,
-    // Whether we're connected
+    /// Whether we're connected
     connected: Arc<RwLock<bool>>,
+
+    // --- Dual-Wallet Recycling ---
+
+    /// Return wallet for receiving change (None if not configured)
+    return_wallet: Option<KaspaWallet>,
+    /// Cached UTXOs for the RETURN wallet
+    pub return_utxos: Arc<RwLock<Vec<Utxo>>>,
 }
 
 impl KaspaService {
@@ -335,6 +419,41 @@ impl KaspaService {
             .map(|w| w.address().to_string())
             .unwrap_or_else(|| config.wallet_address.clone());
 
+        // Initialize return wallet if key is provided (dual-wallet recycling)
+        let return_wallet = if let Some(ref key_hex) = config.return_wallet_key {
+            let rw = KaspaWallet::from_hex(key_hex, &config.network)
+                .map_err(|e| KaspaServiceError::InvalidConfig(
+                    format!("Failed to load return wallet from RETURN_WALLET_KEY: {}", e)
+                ))?;
+
+            info!("Return wallet initialized: {}", rw.address());
+
+            // Ensure it's different from the stamp wallet
+            if let Some(ref stamp) = wallet {
+                if stamp.address() == rw.address() {
+                    return Err(KaspaServiceError::InvalidConfig(
+                        "RETURN_WALLET_KEY must produce a different address than CALENDAR_WALLET_KEY".to_string()
+                    ));
+                }
+            }
+
+            // Warn if return_wallet_address in config differs from derived address
+            if let Some(ref configured_addr) = config.return_wallet_address {
+                if !configured_addr.is_empty() && configured_addr != rw.address() {
+                    warn!(
+                        "RETURN_WALLET_ADDRESS ({}) differs from derived address ({}). Using derived address.",
+                        configured_addr,
+                        rw.address()
+                    );
+                }
+            }
+
+            Some(rw)
+        } else {
+            debug!("No return wallet configured - change will go back to stamp wallet");
+            None
+        };
+
         Ok(Self {
             config: KaspaServiceConfig {
                 wallet_address,
@@ -345,6 +464,8 @@ impl KaspaService {
             utxos: Arc::new(RwLock::new(Vec::new())),
             dag_info: Arc::new(RwLock::new(None)),
             connected: Arc::new(RwLock::new(false)),
+            return_wallet,
+            return_utxos: Arc::new(RwLock::new(Vec::new())),
         })
     }
 
@@ -504,19 +625,22 @@ impl KaspaService {
             });
         }
 
-        // Build transaction
+        // Build transaction with change going to RETURN wallet (if configured)
+        let change_address = self.get_change_address();
         let tx = TransactionBuilder::new()
             .commitment(&commitment)
             .add_inputs(utxos.clone())
-            .change_address(&self.config.wallet_address)
+            .change_address(change_address)
             .fee_per_gram(self.config.fee_per_gram)
             .include_magic(self.config.include_magic)
             .build()
             .map_err(|e| KaspaServiceError::SubmissionFailed(e.to_string()))?;
 
         info!(
-            "Built transaction: fee={} sompi, change={} sompi",
-            tx.fee, tx.change_amount
+            "Built transaction: fee={} sompi, change={} sompi → {}",
+            tx.fee,
+            tx.change_amount,
+            if self.is_recycling_enabled() { "RETURN wallet" } else { "self" }
         );
 
         // Get wallet for signing
@@ -704,9 +828,70 @@ impl KaspaService {
     }
 
     /// Get configuration
-    #[allow(dead_code)]
     pub fn config(&self) -> &KaspaServiceConfig {
         &self.config
+    }
+
+    // --- Dual-Wallet Recycling Methods ---
+
+    /// Get the change address for commitment transactions.
+    /// Returns RETURN wallet address if configured, otherwise STAMP wallet address.
+    pub fn get_change_address(&self) -> &str {
+        self.return_wallet
+            .as_ref()
+            .map(|w| w.address())
+            .unwrap_or(&self.config.wallet_address)
+    }
+
+    /// Check if dual-wallet recycling is enabled
+    pub fn is_recycling_enabled(&self) -> bool {
+        self.return_wallet.is_some()
+    }
+
+    /// Get the return wallet (if configured)
+    pub fn return_wallet(&self) -> Option<&KaspaWallet> {
+        self.return_wallet.as_ref()
+    }
+
+    /// Get the recycle threshold from config
+    pub fn recycle_threshold(&self) -> u64 {
+        self.config.recycle_threshold
+    }
+
+    /// Refresh UTXOs for the return wallet
+    pub async fn refresh_return_utxos(&self) -> Result<()> {
+        let return_wallet = match &self.return_wallet {
+            Some(w) => w,
+            None => return Ok(()), // No return wallet configured
+        };
+
+        if !self.is_connected().await {
+            return Err(KaspaServiceError::NotConnected);
+        }
+
+        match self.client.get_utxos_by_address(return_wallet.address()).await {
+            Ok(utxos) => {
+                let total: u64 = utxos.iter().map(|u| u.amount).sum();
+                debug!(
+                    "Return wallet {} has {} UTXOs totaling {} sompi ({:.4} KAS)",
+                    return_wallet.address(),
+                    utxos.len(),
+                    total,
+                    total as f64 / 100_000_000.0
+                );
+                *self.return_utxos.write().await = utxos;
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to get return wallet UTXOs: {}", e);
+                Err(KaspaServiceError::Core(e))
+            }
+        }
+    }
+
+    /// Get total balance of return wallet
+    pub async fn return_wallet_balance(&self) -> u64 {
+        self.return_utxos.read().await.iter().map(|u| u.amount).sum()
     }
 
     /// Retry an async operation with exponential backoff

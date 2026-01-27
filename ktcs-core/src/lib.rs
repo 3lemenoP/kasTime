@@ -88,6 +88,7 @@ pub use resolver::{resolve_url, Resolver};
 #[cfg(feature = "kaspa-client")]
 pub use tx::{
     address_to_script, select_utxos, CommitmentTransaction, TransactionBuilder,
+    TransferTransaction, TransferTransactionBuilder,
     DEFAULT_FEE_PER_GRAM, DUST_THRESHOLD, KTCS_MAGIC_PREFIX, MAX_OP_RETURN_SIZE,
     MIN_FEE_PER_GRAM,
 };

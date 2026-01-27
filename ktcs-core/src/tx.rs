@@ -437,6 +437,167 @@ pub fn generate_nonce() -> Result<[u8; 16]> {
     ))
 }
 
+// =============================================================================
+// Transfer Transaction Builder (for dual-wallet recycling)
+// =============================================================================
+
+/// A simple transfer transaction (no OP_RETURN commitment)
+///
+/// Used for recycling funds from RETURN wallet back to STAMP wallet.
+#[derive(Debug, Clone)]
+pub struct TransferTransaction {
+    /// The unsigned transaction
+    pub transaction: Transaction,
+    /// Total input amount in sompi
+    pub total_input: u64,
+    /// Amount being sent (to destination)
+    pub send_amount: u64,
+    /// Fee in sompi
+    pub fee: u64,
+}
+
+/// Builder for creating simple transfer transactions (no OP_RETURN)
+///
+/// Used for wallet recycling - sends all funds from one wallet to another.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let tx = TransferTransactionBuilder::new()
+///     .add_inputs(utxos)
+///     .destination("kaspa:qz...")
+///     .send_all()
+///     .fee_per_gram(1)
+///     .build()?;
+/// ```
+#[derive(Debug, Clone)]
+pub struct TransferTransactionBuilder {
+    inputs: Vec<Utxo>,
+    destination_address: Option<String>,
+    fee_per_gram: u64,
+}
+
+impl TransferTransactionBuilder {
+    /// Create a new transfer transaction builder
+    pub fn new() -> Self {
+        Self {
+            inputs: Vec::new(),
+            destination_address: None,
+            fee_per_gram: DEFAULT_FEE_PER_GRAM,
+        }
+    }
+
+    /// Add a UTXO input
+    pub fn add_input(mut self, utxo: Utxo) -> Self {
+        self.inputs.push(utxo);
+        self
+    }
+
+    /// Add multiple UTXO inputs
+    pub fn add_inputs(mut self, utxos: impl IntoIterator<Item = Utxo>) -> Self {
+        for utxo in utxos {
+            self.inputs.push(utxo);
+        }
+        self
+    }
+
+    /// Set destination address (where funds will be sent)
+    pub fn destination(mut self, address: &str) -> Self {
+        self.destination_address = Some(address.to_string());
+        self
+    }
+
+    /// Set fee rate in sompi per gram (mass unit)
+    pub fn fee_per_gram(mut self, fee: u64) -> Self {
+        self.fee_per_gram = fee.max(MIN_FEE_PER_GRAM);
+        self
+    }
+
+    /// Build the transfer transaction
+    ///
+    /// Sends all input funds (minus fee) to the destination address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No inputs are provided
+    /// - No destination address is set
+    /// - Insufficient funds for fee
+    /// - Send amount would be below dust threshold
+    pub fn build(self) -> Result<TransferTransaction> {
+        if self.inputs.is_empty() {
+            return Err(KtcsError::Other("No inputs provided".to_string()));
+        }
+
+        let destination = self.destination_address.ok_or_else(|| {
+            KtcsError::Other("Destination address not set".to_string())
+        })?;
+
+        let dest_script = address_to_script(&destination)?;
+
+        let total_input: u64 = self.inputs.iter().map(|u| u.amount).sum();
+
+        // Calculate fee (simpler than commitment tx: only 1 output)
+        let estimated_mass = estimate_transfer_mass(self.inputs.len());
+        let fee = estimated_mass * self.fee_per_gram;
+
+        if total_input <= fee {
+            return Err(KtcsError::Other(format!(
+                "Insufficient funds for transfer: have {} sompi, fee is {} sompi",
+                total_input, fee
+            )));
+        }
+
+        let send_amount = total_input - fee;
+
+        // Check dust threshold
+        if send_amount < DUST_THRESHOLD {
+            return Err(KtcsError::Other(format!(
+                "Send amount {} is below dust threshold {}",
+                send_amount, DUST_THRESHOLD
+            )));
+        }
+
+        // Build transaction
+        let mut tx = Transaction::new();
+
+        for utxo in &self.inputs {
+            tx.add_input(TransactionInput {
+                previous_outpoint_hash: utxo.transaction_id,
+                previous_outpoint_index: utxo.index,
+                signature_script: vec![],
+            });
+        }
+
+        tx.add_output(TransactionOutput {
+            amount: send_amount,
+            script_public_key: dest_script,
+        });
+
+        Ok(TransferTransaction {
+            transaction: tx,
+            total_input,
+            send_amount,
+            fee,
+        })
+    }
+}
+
+impl Default for TransferTransactionBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Estimate transaction mass for a simple transfer (no OP_RETURN)
+fn estimate_transfer_mass(num_inputs: usize) -> u64 {
+    const BASE_MASS: u64 = 10;
+    const INPUT_MASS: u64 = 148;
+    const OUTPUT_MASS: u64 = 34;
+
+    BASE_MASS + (INPUT_MASS * num_inputs as u64) + OUTPUT_MASS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

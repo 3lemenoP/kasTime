@@ -34,6 +34,7 @@ use routes::websocket::{ws_handler, BatchedEvent, ConfirmationEvent, WsAppState,
 use services::batch_manager::{BatchManager, PendingStamp};
 use services::database::{Database, DbStampRecord, DbStampStatus};
 use services::kaspa_service::{KaspaService, KaspaServiceConfig};
+use services::recycle_service::RecycleService;
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -482,6 +483,35 @@ async fn main() {
         }
     });
 
+    // Start recycle service task (if dual-wallet recycling is enabled)
+    if state.kaspa_service.is_recycling_enabled() {
+        let recycle_service = Arc::new(RecycleService::new(state.kaspa_service.clone()));
+        let recycle_shutdown_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            recycle_service.run_loop(recycle_shutdown_rx).await;
+        });
+
+        // Also refresh return wallet UTXOs periodically
+        let return_kaspa = state.kaspa_service.clone();
+        let mut return_utxo_shutdown_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+            loop {
+                tokio::select! {
+                    _ = return_utxo_shutdown_rx.recv() => {
+                        info!("Return UTXO refresh task received shutdown signal");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        if let Err(e) = return_kaspa.refresh_return_utxos().await {
+                            tracing::debug!("Periodic return UTXO refresh failed: {}", e);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // Configure rate limiting with peer IP extraction (works for localhost)
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
@@ -518,7 +548,7 @@ async fn main() {
         )
         // CORS applied after ServiceBuilder - outermost layer
         .layer(cors_layer)
-        .with_state(state);
+        .with_state(state.clone());
 
     info!("KTCS Calendar Server starting on {}", server_config.bind_address);
     info!("Security configuration:");
@@ -526,6 +556,23 @@ async fn main() {
     info!("  Rate limit: {}/s (burst: {})", server_config.rate_limit_per_second, server_config.rate_limit_burst);
     info!("  Max body size: {} bytes", server_config.max_body_size);
     info!("  API key required: {}", api_key.is_some());
+
+    // Log wallet configuration
+    if state.kaspa_service.is_recycling_enabled() {
+        info!("Wallet configuration (dual-wallet recycling ENABLED):");
+        info!("  STAMP wallet: {}", state.kaspa_service.config().wallet_address);
+        if let Some(return_wallet) = state.kaspa_service.return_wallet() {
+            info!("  RETURN wallet: {}", return_wallet.address());
+        }
+        info!("  Recycle threshold: {} sompi ({:.2} KAS)",
+            state.kaspa_service.recycle_threshold(),
+            state.kaspa_service.recycle_threshold() as f64 / 100_000_000.0
+        );
+        info!("  Recycle poll interval: {}s", state.kaspa_service.config().recycle_poll_interval_secs);
+    } else {
+        info!("Wallet configuration (single wallet mode):");
+        info!("  Wallet: {}", state.kaspa_service.config().wallet_address);
+    }
     info!("Endpoints:");
     info!("  POST /v1/stamp     - Submit a timestamp");
     info!("  GET  /v1/stamp/:id - Get stamp status");
