@@ -1,6 +1,6 @@
-import { useParams } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { useEffect, useState, useRef } from 'react'
-import { Download, RefreshCw, Share2, ExternalLink, Copy, CheckCircle, Clock, Loader2, Wifi, WifiOff } from 'lucide-react'
+import { Download, RefreshCw, Share2, ExternalLink, Copy, CheckCircle, Clock, Loader2, Wifi, WifiOff, Wallet } from 'lucide-react'
 import Button from '../components/ui/Button'
 import { useStampStore } from '../stores/stamp'
 import { createCalendarClient, CalendarClient } from '../api/calendar'
@@ -15,9 +15,39 @@ interface ParentBlock {
 
 function ProofPage(): JSX.Element {
   const { id } = useParams()
-  const { stampResponse, setStampResponse, setConfirmedProof } = useStampStore()
+  const isDirectMode = id === 'direct'
+
+  const {
+    stampResponse,
+    setStampResponse,
+    setConfirmedProof,
+    // Direct mode state
+    confirmedProof: directConfirmedProof,
+    blockInfo: directBlockInfo,
+    transactionId: directTxId,
+    hash: directHash,
+    fileName: directFileName,
+  } = useStampStore()
+
   const [error, setError] = useState<string | null>(null)
-  const [response, setResponse] = useState<StampResponse | null>(stampResponse)
+  const [response, setResponse] = useState<StampResponse | null>(() => {
+    // For direct mode, build response from store state
+    if (isDirectMode && directConfirmedProof && directBlockInfo) {
+      return {
+        id: 'direct',
+        status: 'confirmed',
+        submitted_at: new Date().toISOString(),
+        confirmed_at: new Date(Number(directBlockInfo.timestamp)).toISOString(),
+        daa_score: Number(directBlockInfo.daaScore),
+        blue_score: Number(directBlockInfo.blueScore),
+        block_hash: directBlockInfo.hash,
+        tx_hash: directTxId || undefined,
+        proof: directConfirmedProof,
+        parent_hashes: directBlockInfo.parentHashes,
+      }
+    }
+    return stampResponse
+  })
   const [wsConnected, setWsConnected] = useState(false)
 
   // Keep refs stable across renders - these don't trigger re-renders
@@ -32,7 +62,8 @@ function ProofPage(): JSX.Element {
   // Subscribe to WebSocket for real-time confirmation
   // IMPORTANT: Only depend on `id` to prevent re-subscription loops
   useEffect(() => {
-    if (!id) return
+    // Direct mode uses store data, no API fetch needed
+    if (!id || isDirectMode) return
 
     // Create client once
     if (!clientRef.current) {
@@ -134,7 +165,27 @@ function ProofPage(): JSX.Element {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]) // Only re-run when id changes - use refs for everything else
+  }, [id, isDirectMode]) // Only re-run when id changes - use refs for everything else
+
+  // Handle missing direct proof data (e.g., after clearing localStorage)
+  if (isDirectMode && !response) {
+    return (
+      <div className="max-w-4xl mx-auto px-6 py-12 text-center">
+        <h1 className="text-display-md font-display mb-4">
+          <span className="text-[var(--text-primary)]">PROOF </span>
+          <span className="text-[var(--accent-primary)]">NOT FOUND</span>
+        </h1>
+        <p className="text-[var(--text-secondary)] mb-6">
+          No direct stamp proof found. The proof data may have been cleared.
+        </p>
+        <Link to="/">
+          <Button variant="secondary">
+            Return to Home
+          </Button>
+        </Link>
+      </div>
+    )
+  }
 
   const isPending = !response || response.status !== 'confirmed'
 
@@ -146,7 +197,11 @@ function ProofPage(): JSX.Element {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${id}.kts`
+    // Use original filename for direct mode, or stamp ID for calendar mode
+    const baseName = isDirectMode && directFileName
+      ? directFileName.replace(/\.[^/.]+$/, '') // Remove extension
+      : id
+    a.download = `${baseName}.kts`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -208,6 +263,12 @@ function ProofPage(): JSX.Element {
             <span className="text-[var(--text-primary)]">TIMESTAMP </span>
             <span className="text-[var(--accent-primary)]">PROOF</span>
           </h1>
+          {isDirectMode && (
+            <div className="flex items-center gap-2 mt-1">
+              <Wallet className="w-4 h-4 text-[var(--accent-primary)]" />
+              <span className="text-sm text-[var(--text-secondary)]">Direct wallet stamp</span>
+            </div>
+          )}
         </div>
         {isPending ? (
           <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-[var(--status-warning)]/15 border border-[var(--status-warning)]/30">
@@ -230,12 +291,17 @@ function ProofPage(): JSX.Element {
 
           <div className="space-y-4">
             <div>
-              <div className="text-label mb-1">HASH</div>
+              <div className="text-label mb-1">DOCUMENT HASH</div>
               <div className="flex items-center gap-2">
                 <code className="font-data text-sm text-[var(--accent-primary)] break-all">
-                  {truncateHash(proof.digest)}
+                  {isDirectMode && directHash
+                    ? truncateHash(directHash)
+                    : truncateHash(proof.digest)}
                 </code>
-                <button className="p-1 hover:text-[var(--accent-primary)] transition-colors">
+                <button
+                  className="p-1 hover:text-[var(--accent-primary)] transition-colors"
+                  onClick={() => navigator.clipboard.writeText(isDirectMode && directHash ? directHash : proof.digest)}
+                >
                   <Copy className="w-4 h-4" />
                 </button>
               </div>
@@ -364,8 +430,8 @@ function ProofPage(): JSX.Element {
         </div>
       </div>
 
-      {/* Loading Overlay */}
-      {isPending && (
+      {/* Loading Overlay - only show for calendar mode (direct stamps are always confirmed when reaching this page) */}
+      {isPending && !isDirectMode && (
         <div className="mb-6 p-4 rounded-lg bg-[var(--status-warning)]/10 border border-[var(--status-warning)]/30">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -412,10 +478,12 @@ function ProofPage(): JSX.Element {
           <RefreshCw className="w-4 h-4 mr-2" />
           REFRESH
         </Button>
-        <Button variant="secondary" onClick={() => navigator.clipboard.writeText(window.location.href)}>
-          <Share2 className="w-4 h-4 mr-2" />
-          COPY LINK
-        </Button>
+        {!isDirectMode && (
+          <Button variant="secondary" onClick={() => navigator.clipboard.writeText(window.location.href)}>
+            <Share2 className="w-4 h-4 mr-2" />
+            COPY LINK
+          </Button>
+        )}
       </div>
     </div>
   )

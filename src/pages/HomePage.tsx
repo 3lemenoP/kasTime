@@ -366,8 +366,8 @@ function HomePage(): JSX.Element {
 
       setDirectStep('complete');
 
-      // Navigate to a results page or show download
-      // For now, show success message
+      // Navigate to direct proof page
+      navigate('/proof/direct');
     } catch (err) {
       console.error('Direct stamp failed:', err);
       const errorMsg = err instanceof Error ? err.message : 'Direct stamp failed';

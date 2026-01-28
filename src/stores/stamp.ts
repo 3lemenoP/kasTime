@@ -6,6 +6,7 @@
  */
 
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import type { BatchMode, KtcsProof } from '../types/proof';
 import type { StampResponse } from '../types/api';
 import type { KaspaUtxo, KaspaBlockInfo } from '../api/kaspa';
@@ -168,8 +169,10 @@ const initialState = {
 /**
  * Stamp store for managing timestamp creation
  */
-export const useStampStore = create<StampState>((set, get) => ({
-  ...initialState,
+export const useStampStore = create<StampState>()(
+  persist(
+    (set, get) => ({
+      ...initialState,
 
   // ==========================================================================
   // Common Actions
@@ -325,7 +328,40 @@ export const useStampStore = create<StampState>((set, get) => ({
       utxos: null,
       walletBalance: null,
     }),
-}));
+    }),
+    {
+      name: 'ktcs-direct-proof',
+      storage: createJSONStorage(() => localStorage, {
+        reviver: (_key, value) => {
+          // Restore bigint from string representation
+          if (typeof value === 'string' && value.endsWith('n')) {
+            return BigInt(value.slice(0, -1));
+          }
+          return value;
+        },
+        replacer: (_key, value) => {
+          // Serialize bigint as string with 'n' suffix
+          if (typeof value === 'bigint') {
+            return value.toString() + 'n';
+          }
+          return value;
+        },
+      }),
+      partialize: (state) => ({
+        // ONLY persist proof display data - NOT sensitive wallet info
+        confirmedProof: state.confirmedProof,
+        blockInfo: state.blockInfo,
+        transactionId: state.transactionId,
+        hash: state.hash,
+        fileName: state.fileName,
+        // NEVER persist:
+        // - walletKey (security)
+        // - walletAddress (can be re-derived)
+        // - utxos, walletBalance (stale data)
+      }),
+    }
+  )
+);
 
 /**
  * Helper hook to get step display info (calendar mode)
