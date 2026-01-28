@@ -65,18 +65,14 @@ pub fn create_commitment(data_hash: &[u8; 32], nonce: &[u8]) -> [u8; 32] {
     commitment
 }
 
-/// Create a commitment with a random nonce
-#[cfg(not(target_arch = "wasm32"))]
+/// Create a commitment with a cryptographically secure random nonce
+#[cfg(all(not(target_arch = "wasm32"), feature = "keygen"))]
 pub fn create_commitment_with_random_nonce(data_hash: &[u8; 32]) -> ([u8; 32], [u8; 16]) {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use rand::RngCore;
 
-    // Simple pseudo-random nonce generation (in production, use proper RNG)
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let mut nonce = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut nonce);
 
-    let nonce: [u8; 16] = timestamp.to_le_bytes();
     let commitment = create_commitment(data_hash, &nonce);
     (commitment, nonce)
 }

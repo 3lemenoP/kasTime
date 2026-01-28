@@ -76,6 +76,8 @@ pub struct TransactionBuilder {
     change_address: Option<String>,
     change_script: Option<ScriptPublicKey>,
     fee_per_gram: u64,
+    #[allow(dead_code)]
+    include_ktcs_magic: bool,
 }
 
 impl TransactionBuilder {
@@ -87,6 +89,7 @@ impl TransactionBuilder {
             change_address: None,
             change_script: None,
             fee_per_gram: DEFAULT_FEE_PER_GRAM,
+            include_ktcs_magic: false,
         }
     }
 
@@ -125,6 +128,15 @@ impl TransactionBuilder {
     /// Set the fee rate in sompi per gram (mass unit)
     pub fn fee_per_gram(mut self, fee: u64) -> Self {
         self.fee_per_gram = fee.max(MIN_FEE_PER_GRAM);
+        self
+    }
+
+    /// Include the KTCS magic prefix in the output (reserved for future use)
+    ///
+    /// Note: Currently a no-op as Kaspa uses P2PK burn outputs which don't
+    /// support additional data. This method exists for API compatibility.
+    pub fn include_magic(mut self, include: bool) -> Self {
+        self.include_ktcs_magic = include;
         self
     }
 

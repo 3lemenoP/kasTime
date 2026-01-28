@@ -201,9 +201,6 @@ export class KaspaClient {
         params,
       };
 
-      if (method === 'submitTransaction') {
-        console.log('DEBUG: Kaspa RPC request:', JSON.stringify(request, null, 2));
-      }
       this.ws!.send(JSON.stringify(request));
     });
   }
@@ -233,7 +230,6 @@ export class KaspaClient {
         timeout,
       });
 
-      console.log('DEBUG: Kaspa RPC raw request:', jsonRequest);
       this.ws!.send(jsonRequest);
     });
   }
@@ -253,7 +249,6 @@ export class KaspaClient {
           this.pendingRequests.delete(response.id);
 
           if (response.error) {
-            console.error('DEBUG: Kaspa RPC error response:', JSON.stringify(response, null, 2));
             pending.reject(new Error(response.error.message || 'RPC error'));
           } else {
             // Kaspa wRPC returns result in 'params' or 'result' field

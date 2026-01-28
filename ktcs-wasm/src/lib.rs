@@ -595,7 +595,7 @@ pub fn sign_transaction(
 
     for i in 0..tx.inputs.len() {
         // Build sighash transaction structure
-        let sighash_tx = build_sighash_transaction(&tx, &utxos);
+        let sighash_tx = build_sighash_transaction(&tx, &utxos)?;
 
         // Debug: log sighash input data
         let sighash_input = &sighash_tx.inputs[i];
@@ -653,8 +653,8 @@ pub fn sign_transaction(
 }
 
 /// Build sighash transaction structure for signing
-fn build_sighash_transaction(tx: &Transaction, utxos: &[Utxo]) -> SighashTransaction {
-    let inputs: Vec<SighashInput> = tx
+fn build_sighash_transaction(tx: &Transaction, utxos: &[Utxo]) -> Result<SighashTransaction, JsValue> {
+    let inputs: Result<Vec<SighashInput>, JsValue> = tx
         .inputs
         .iter()
         .map(|inp| {
@@ -664,9 +664,15 @@ fn build_sighash_transaction(tx: &Transaction, utxos: &[Utxo]) -> SighashTransac
                     u.transaction_id == inp.previous_outpoint_hash
                         && u.index == inp.previous_outpoint_index
                 })
-                .expect("UTXO must exist");
+                .ok_or_else(|| {
+                    JsValue::from_str(&format!(
+                        "UTXO not found for input: {}:{}",
+                        hex::encode(inp.previous_outpoint_hash),
+                        inp.previous_outpoint_index
+                    ))
+                })?;
 
-            SighashInput {
+            Ok(SighashInput {
                 previous_outpoint_hash: inp.previous_outpoint_hash,
                 previous_outpoint_index: inp.previous_outpoint_index,
                 script_public_key_version: utxo.script_public_key.version,
@@ -674,9 +680,11 @@ fn build_sighash_transaction(tx: &Transaction, utxos: &[Utxo]) -> SighashTransac
                 value: utxo.amount,
                 sequence: u64::MAX, // Kaspa standard - matches RPC submission
                 sig_op_count: 1, // Standard for P2PK
-            }
+            })
         })
         .collect();
+
+    let inputs = inputs?;
 
     let outputs: Vec<SighashOutput> = tx
         .outputs
@@ -688,7 +696,7 @@ fn build_sighash_transaction(tx: &Transaction, utxos: &[Utxo]) -> SighashTransac
         })
         .collect();
 
-    SighashTransaction {
+    Ok(SighashTransaction {
         version: tx.version,
         inputs,
         outputs,
@@ -696,7 +704,7 @@ fn build_sighash_transaction(tx: &Transaction, utxos: &[Utxo]) -> SighashTransac
         subnetwork_id: tx.subnetwork_id,
         gas: tx.gas,
         payload: tx.payload.clone(),
-    }
+    })
 }
 
 /// Compute transaction ID (double SHA256 of serialized transaction)

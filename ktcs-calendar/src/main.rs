@@ -22,6 +22,7 @@ use tower_http::{
 };
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::FmtSubscriber;
+use subtle::ConstantTimeEq;
 
 mod routes;
 mod services;
@@ -30,7 +31,7 @@ use ktcs_core::{
     serialize_proof, Attestation, BatchMode, KaspaAttestation, KtcsProof, MerkleTree,
     PendingAttestation,
 };
-use routes::websocket::{ws_handler, BatchedEvent, ConfirmationEvent, WsAppState, WsState};
+use routes::websocket::{ws_handler, BatchedEvent, ConfirmationEvent, HasAllowedOrigins, WsAppState, WsState};
 use services::batch_manager::{BatchManager, PendingStamp};
 use services::database::{Database, DbStampRecord, DbStampStatus};
 use services::kaspa_service::{KaspaService, KaspaServiceConfig};
@@ -48,11 +49,19 @@ struct AppState {
     public_url: String,
     /// API key for authentication (None if not required)
     api_key: Option<String>,
+    /// Allowed CORS origins (for WebSocket validation)
+    cors_origins: Vec<String>,
 }
 
 impl WsAppState for AppState {
     fn ws_state(&self) -> &Arc<WsState> {
         &self.ws_state
+    }
+}
+
+impl HasAllowedOrigins for AppState {
+    fn allowed_origins(&self) -> &[String] {
+        &self.cors_origins
     }
 }
 
@@ -259,12 +268,28 @@ impl ServerConfig {
             }
         }
 
+        // SECURITY: Enforce API key in production environment
+        if !self.require_api_key {
+            let env = std::env::var("KTCS_ENVIRONMENT")
+                .unwrap_or_else(|_| "development".to_string())
+                .to_lowercase();
+
+            if env == "production" {
+                return Err(ConfigError::Invalid(
+                    "SECURITY ERROR: API key authentication must be enabled in production. \
+                     Set REQUIRE_API_KEY=true and provide API_KEY.".to_string()
+                ));
+            } else {
+                warn!(
+                    "API key authentication is DISABLED. \
+                     Set REQUIRE_API_KEY=true for production deployments."
+                );
+            }
+        }
+
         // Warn about insecure configurations
         if self.cors_origins.len() == 1 && self.cors_origins[0] == "*" {
             warn!("CORS allows all origins - this is insecure for production");
-        }
-        if !self.require_api_key {
-            warn!("API key authentication is not required - consider enabling for production");
         }
 
         Ok(())
@@ -355,7 +380,15 @@ async fn api_key_middleware(
     match request.headers().get("X-API-Key") {
         Some(provided_key) => {
             let provided = provided_key.to_str().unwrap_or("");
-            if provided == expected_key {
+            // Use constant-time comparison to prevent timing attacks
+            let provided_bytes = provided.as_bytes();
+            let expected_bytes = expected_key.as_bytes();
+
+            // Length check combined with constant-time byte comparison
+            let keys_match = provided_bytes.len() == expected_bytes.len()
+                && bool::from(provided_bytes.ct_eq(expected_bytes));
+
+            if keys_match {
                 Ok(next.run(request).await)
             } else {
                 warn!("Invalid API key provided");
@@ -452,6 +485,7 @@ async fn main() {
         ws_state,
         public_url: server_config.public_url.clone(),
         api_key: api_key.clone(),
+        cors_origins: server_config.cors_origins.clone(),
     };
 
     // Create shutdown channel for graceful shutdown
@@ -685,7 +719,10 @@ async fn submit_stamp(
         batch_mode: format!("{:?}", req.batch_mode),
     };
     state.database.save_stamp(&db_record).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+        .map_err(|e| {
+            error!("Database error saving stamp: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
+        })?;
 
     // Add to batch manager
     {
@@ -723,7 +760,10 @@ async fn get_stamp(
     Path(id): Path<String>,
 ) -> Result<Json<StampResponse>, (StatusCode, String)> {
     let db_record = state.database.get_stamp(&id).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?
+        .map_err(|e| {
+            error!("Database error fetching stamp: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
+        })?
         .ok_or((StatusCode::NOT_FOUND, format!("Stamp not found: {}", id)))?;
 
     // Convert DB timestamp (seconds) to milliseconds for formatting
@@ -1141,6 +1181,7 @@ mod tests {
             ws_state: Arc::new(WsState::new()),
             public_url: "http://localhost:3001".to_string(),
             api_key: None, // No API key for tests
+            cors_origins: vec!["*".to_string()], // Allow all origins in tests
         }
     }
 

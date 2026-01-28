@@ -355,20 +355,29 @@ fn decode_varint(data: &[u8], pos: usize) -> Result<(u64, usize)> {
         if data.len() < pos + 3 {
             return Err(KtcsError::UnexpectedEof);
         }
-        let value = u16::from_le_bytes(data[pos + 1..pos + 3].try_into().unwrap());
+        let bytes: [u8; 2] = data[pos + 1..pos + 3]
+            .try_into()
+            .map_err(|_| KtcsError::InvalidVarint)?;
+        let value = u16::from_le_bytes(bytes);
         Ok((value as u64, pos + 3))
     } else if first == 0xFE {
         if data.len() < pos + 5 {
             return Err(KtcsError::UnexpectedEof);
         }
-        let value = u32::from_le_bytes(data[pos + 1..pos + 5].try_into().unwrap());
+        let bytes: [u8; 4] = data[pos + 1..pos + 5]
+            .try_into()
+            .map_err(|_| KtcsError::InvalidVarint)?;
+        let value = u32::from_le_bytes(bytes);
         Ok((value as u64, pos + 5))
     } else {
         // first == 0xFF
         if data.len() < pos + 9 {
             return Err(KtcsError::UnexpectedEof);
         }
-        let value = u64::from_le_bytes(data[pos + 1..pos + 9].try_into().unwrap());
+        let bytes: [u8; 8] = data[pos + 1..pos + 9]
+            .try_into()
+            .map_err(|_| KtcsError::InvalidVarint)?;
+        let value = u64::from_le_bytes(bytes);
         Ok((value, pos + 9))
     }
 }

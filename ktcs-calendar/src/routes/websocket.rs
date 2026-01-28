@@ -13,6 +13,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -220,12 +221,53 @@ pub trait WsAppState: Clone + Send + Sync + 'static {
     fn ws_state(&self) -> &Arc<WsState>;
 }
 
-/// WebSocket upgrade handler
-pub async fn ws_handler<S: WsAppState>(
+/// Trait for accessing allowed CORS origins (for WebSocket origin validation)
+pub trait HasAllowedOrigins {
+    fn allowed_origins(&self) -> &[String];
+}
+
+/// Validate WebSocket upgrade request origin
+fn validate_ws_origin(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
+    // If wildcard is configured, allow all
+    if allowed_origins.iter().any(|o| o == "*") {
+        return true;
+    }
+
+    // Get the Origin header
+    let origin = match headers.get("origin").and_then(|h| h.to_str().ok()) {
+        Some(o) => o,
+        None => {
+            // No origin header - could be same-origin or non-browser client
+            // Allow if no strict origin list is configured
+            return allowed_origins.is_empty();
+        }
+    };
+
+    // Check against allowed origins
+    allowed_origins.iter().any(|allowed| {
+        if allowed == "*" {
+            true
+        } else {
+            // Compare origin (protocol + host + port)
+            origin == allowed || origin.starts_with(&format!("{}/", allowed))
+        }
+    })
+}
+
+/// WebSocket upgrade handler with origin validation
+pub async fn ws_handler<S: WsAppState + HasAllowedOrigins>(
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
     State(state): State<S>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    // Validate origin before accepting WebSocket upgrade
+    let allowed_origins = state.allowed_origins();
+    if !validate_ws_origin(&headers, allowed_origins) {
+        warn!("WebSocket connection rejected: invalid origin");
+        return (StatusCode::FORBIDDEN, "Invalid origin").into_response();
+    }
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state)).into_response()
 }
 
 /// Handle a WebSocket connection

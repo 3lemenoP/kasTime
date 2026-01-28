@@ -12,6 +12,7 @@ use ktcs_core::{
     Utxo, format_blue_work, subtract_blue_work, sign_transaction,
 };
 use ktcs_core::wallet::KaspaWallet;
+use secrecy::{Secret, ExposeSecret};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -84,7 +85,8 @@ pub struct KaspaServiceConfig {
     pub include_magic: bool,
     /// Calendar wallet private key (hex-encoded, 64 chars) - STAMP wallet
     /// Required when mock_mode is false
-    pub wallet_key: Option<String>,
+    /// Wrapped in Secret for secure memory handling
+    pub wallet_key: Option<Secret<String>>,
     /// Enable mock mode (for testing only - DISABLES BLOCKCHAIN ANCHORING)
     /// WARNING: When enabled, timestamps are NOT anchored to the blockchain!
     pub mock_mode: bool,
@@ -94,7 +96,8 @@ pub struct KaspaServiceConfig {
     /// Return wallet private key (hex-encoded, 64 chars)
     /// When set, change from STAMP transactions goes here and is automatically
     /// recycled back to STAMP wallet.
-    pub return_wallet_key: Option<String>,
+    /// Wrapped in Secret for secure memory handling
+    pub return_wallet_key: Option<Secret<String>>,
     /// Return wallet address (auto-derived from key if not set)
     pub return_wallet_address: Option<String>,
     /// Minimum balance in sompi before recycling (default: 1 KAS = 100,000,000)
@@ -190,12 +193,13 @@ impl KaspaServiceConfig {
 
         // Validate wallet key format if provided
         if let Some(ref key) = self.wallet_key {
-            if key.len() != 64 {
+            let key_str = key.expose_secret();
+            if key_str.len() != 64 {
                 return Err(KaspaServiceError::InvalidConfig(
-                    format!("CALENDAR_WALLET_KEY must be 64 hex characters (32 bytes), got {} chars", key.len())
+                    format!("CALENDAR_WALLET_KEY must be 64 hex characters (32 bytes), got {} chars", key_str.len())
                 ));
             }
-            if hex::decode(key).is_err() {
+            if hex::decode(key_str).is_err() {
                 return Err(KaspaServiceError::InvalidConfig(
                     "CALENDAR_WALLET_KEY is not valid hex".to_string()
                 ));
@@ -204,19 +208,20 @@ impl KaspaServiceConfig {
 
         // Validate return wallet key if provided (dual-wallet recycling)
         if let Some(ref key) = self.return_wallet_key {
-            if key.len() != 64 {
+            let key_str = key.expose_secret();
+            if key_str.len() != 64 {
                 return Err(KaspaServiceError::InvalidConfig(
-                    format!("RETURN_WALLET_KEY must be 64 hex characters (32 bytes), got {} chars", key.len())
+                    format!("RETURN_WALLET_KEY must be 64 hex characters (32 bytes), got {} chars", key_str.len())
                 ));
             }
-            if hex::decode(key).is_err() {
+            if hex::decode(key_str).is_err() {
                 return Err(KaspaServiceError::InvalidConfig(
                     "RETURN_WALLET_KEY is not valid hex".to_string()
                 ));
             }
             // Ensure RETURN wallet is different from STAMP wallet
             if let Some(ref stamp_key) = self.wallet_key {
-                if key == stamp_key {
+                if key_str == stamp_key.expose_secret() {
                     return Err(KaspaServiceError::InvalidConfig(
                         "RETURN_WALLET_KEY must be different from CALENDAR_WALLET_KEY".to_string()
                     ));
@@ -290,14 +295,18 @@ impl KaspaServiceConfig {
             .unwrap_or(false);
 
         // Load wallet private key from environment
-        // SECURITY: This should be kept secret! Use proper secret management in production.
+        // SECURITY: Key is wrapped in Secret for secure memory handling
         let wallet_key = std::env::var("CALENDAR_WALLET_KEY")
             .ok()
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .map(Secret::new);
 
         if wallet_key.is_some() {
-            info!("Calendar wallet key loaded from CALENDAR_WALLET_KEY");
+            info!("Calendar wallet configured");
         }
+
+        // Clear environment variable after reading (defense in depth)
+        std::env::remove_var("CALENDAR_WALLET_KEY");
 
         // SECURITY WARNING: Mock mode should ONLY be enabled for testing
         // When enabled, timestamps are NOT anchored to the blockchain!
@@ -312,13 +321,18 @@ impl KaspaServiceConfig {
         }
 
         // Load return wallet key (dual-wallet recycling)
+        // SECURITY: Key is wrapped in Secret for secure memory handling
         let return_wallet_key = std::env::var("RETURN_WALLET_KEY")
             .ok()
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .map(Secret::new);
 
         if return_wallet_key.is_some() {
-            info!("Return wallet key loaded from RETURN_WALLET_KEY (dual-wallet recycling enabled)");
+            info!("Return wallet configured (dual-wallet recycling enabled)");
         }
+
+        // Clear environment variable after reading (defense in depth)
+        std::env::remove_var("RETURN_WALLET_KEY");
 
         let return_wallet_address = std::env::var("RETURN_WALLET_ADDRESS")
             .ok()
@@ -389,8 +403,8 @@ impl KaspaService {
         };
 
         // Initialize wallet if key is provided
-        let wallet = if let Some(ref key_hex) = config.wallet_key {
-            let wallet = KaspaWallet::from_hex(key_hex, &config.network)
+        let wallet = if let Some(ref key_secret) = config.wallet_key {
+            let wallet = KaspaWallet::from_hex(key_secret.expose_secret(), &config.network)
                 .map_err(|e| KaspaServiceError::InvalidConfig(
                     format!("Failed to load wallet from CALENDAR_WALLET_KEY: {}", e)
                 ))?;
@@ -420,8 +434,8 @@ impl KaspaService {
             .unwrap_or_else(|| config.wallet_address.clone());
 
         // Initialize return wallet if key is provided (dual-wallet recycling)
-        let return_wallet = if let Some(ref key_hex) = config.return_wallet_key {
-            let rw = KaspaWallet::from_hex(key_hex, &config.network)
+        let return_wallet = if let Some(ref key_secret) = config.return_wallet_key {
+            let rw = KaspaWallet::from_hex(key_secret.expose_secret(), &config.network)
                 .map_err(|e| KaspaServiceError::InvalidConfig(
                     format!("Failed to load return wallet from RETURN_WALLET_KEY: {}", e)
                 ))?;
