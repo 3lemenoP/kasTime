@@ -5,7 +5,7 @@
 
 use crate::error::{KtcsError, Result};
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 // Domain separation keys for Kaspa Blake2b hashes
 const TRANSACTION_SIGNING_HASH_KEY: &[u8] = b"TransactionSigningHash";
@@ -99,7 +99,8 @@ const CHARSET_REV: [i8; 128] = [
 /// A Kaspa wallet for signing transactions.
 ///
 /// Private key is automatically zeroed when the wallet is dropped.
-#[derive(Clone, ZeroizeOnDrop)]
+/// Note: Clone is intentionally NOT derived to prevent accidental key duplication.
+#[derive(ZeroizeOnDrop)]
 pub struct KaspaWallet {
     /// Private key (32 bytes) - zeroized on drop
     #[zeroize(skip)] // Keypair handles its own zeroing
@@ -167,18 +168,18 @@ impl KaspaWallet {
         &self.network
     }
 
-    /// Get the private key as bytes.
+    /// Get the private key as bytes (zeroized on drop).
     ///
     /// ⚠️ WARNING: Handle with care! Never log or expose this.
-    pub fn private_key(&self) -> [u8; 32] {
-        self.keypair.secret_key().secret_bytes()
+    pub fn private_key(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.keypair.secret_key().secret_bytes())
     }
 
-    /// Get the private key as a hex string.
+    /// Get the private key as a hex string (zeroized on drop).
     ///
     /// ⚠️ WARNING: Handle with care! Never log or expose this.
-    pub fn to_hex(&self) -> String {
-        hex::encode(self.private_key())
+    pub fn to_hex(&self) -> Zeroizing<String> {
+        Zeroizing::new(hex::encode(*self.private_key()))
     }
 
     /// Sign a transaction hash using Schnorr signature.

@@ -53,6 +53,10 @@ pub struct KaspaClientConfig {
     pub auto_reconnect: bool,
     /// Use the PNN resolver to discover public nodes
     pub use_resolver: bool,
+    /// Whether to verify TLS certificates (default: true)
+    /// Note: Certificate verification is handled by the system TLS implementation.
+    /// Set to false only for development with self-signed certificates.
+    pub tls_verify: bool,
 }
 
 impl Default for KaspaClientConfig {
@@ -64,6 +68,7 @@ impl Default for KaspaClientConfig {
             request_timeout_ms: 30000,
             auto_reconnect: true,
             use_resolver: false,
+            tls_verify: true,
         }
     }
 }
@@ -78,6 +83,7 @@ impl KaspaClientConfig {
             request_timeout_ms: 30000,
             auto_reconnect: true,
             use_resolver: true,
+            tls_verify: true,
         }
     }
 
@@ -90,6 +96,7 @@ impl KaspaClientConfig {
             request_timeout_ms: 30000,
             auto_reconnect: true,
             use_resolver: true,
+            tls_verify: true,
         }
     }
 }
@@ -1189,6 +1196,23 @@ impl KaspaClient {
 
                         // Check if our transaction is in this block
                         if block.transaction_ids.iter().any(|id| id == tx_hash) {
+                            // Security: Basic sanity check - block timestamp should be reasonable
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as u64;
+
+                            // Block timestamp should not be more than 1 hour in the future
+                            if block.timestamp > now_ms + 3_600_000 {
+                                tracing::warn!(
+                                    "Block {} has timestamp far in future ({} vs now {}), skipping",
+                                    hex::encode(block.hash),
+                                    block.timestamp,
+                                    now_ms
+                                );
+                                continue;
+                            }
+
                             tracing::info!(
                                 "Transaction {} confirmed in block {} at DAA score {}",
                                 hex::encode(tx_hash),

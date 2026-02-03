@@ -5,6 +5,13 @@
 use crate::error::{KtcsError, Result};
 use crate::types::*;
 
+/// Maximum number of parent hashes allowed (Kaspa blocks typically have ~2 parents)
+const MAX_PARENT_HASHES: u64 = 1024;
+/// Maximum operation data size (1MB)
+const MAX_OPERATION_DATA_SIZE: u64 = 1024 * 1024;
+/// Maximum URL length
+const MAX_URL_LENGTH: u64 = 2048;
+
 /// Serialize a KTCS proof to binary .kts format
 pub fn serialize_proof(proof: &KtcsProof) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -151,6 +158,12 @@ fn deserialize_operation(data: &[u8], cursor: usize) -> Result<(Operation, usize
         OpTag::Append => {
             let (len, new_pos) = decode_varint(data, pos)?;
             pos = new_pos;
+            // Security: Prevent DoS via excessive allocation
+            if len > MAX_OPERATION_DATA_SIZE {
+                return Err(KtcsError::InvalidData(
+                    format!("Append operation data size {} exceeds maximum {}", len, MAX_OPERATION_DATA_SIZE)
+                ));
+            }
             if data.len() < pos + len as usize {
                 return Err(KtcsError::UnexpectedEof);
             }
@@ -161,6 +174,12 @@ fn deserialize_operation(data: &[u8], cursor: usize) -> Result<(Operation, usize
         OpTag::Prepend => {
             let (len, new_pos) = decode_varint(data, pos)?;
             pos = new_pos;
+            // Security: Prevent DoS via excessive allocation
+            if len > MAX_OPERATION_DATA_SIZE {
+                return Err(KtcsError::InvalidData(
+                    format!("Prepend operation data size {} exceeds maximum {}", len, MAX_OPERATION_DATA_SIZE)
+                ));
+            }
             if data.len() < pos + len as usize {
                 return Err(KtcsError::UnexpectedEof);
             }
@@ -225,6 +244,12 @@ fn deserialize_attestation(data: &[u8], cursor: usize) -> Result<(Attestation, u
         AttestationTag::Pending => {
             let (url_len, new_pos) = decode_varint(data, pos)?;
             pos = new_pos;
+            // Security: Prevent DoS via excessive URL allocation
+            if url_len > MAX_URL_LENGTH {
+                return Err(KtcsError::InvalidData(
+                    format!("URL length {} exceeds maximum {}", url_len, MAX_URL_LENGTH)
+                ));
+            }
             if data.len() < pos + url_len as usize {
                 return Err(KtcsError::UnexpectedEof);
             }
@@ -284,6 +309,13 @@ fn deserialize_attestation(data: &[u8], cursor: usize) -> Result<(Attestation, u
 
             let (parent_count, new_pos) = decode_varint(data, pos)?;
             pos = new_pos;
+
+            // Security: Prevent DoS via excessive allocation
+            if parent_count > MAX_PARENT_HASHES {
+                return Err(KtcsError::InvalidData(
+                    format!("Parent count {} exceeds maximum {}", parent_count, MAX_PARENT_HASHES)
+                ));
+            }
 
             let mut parent_hashes = Vec::with_capacity(parent_count as usize);
             for _ in 0..parent_count {

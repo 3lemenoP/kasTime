@@ -11,7 +11,7 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        ConnectInfo, State,
     },
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -19,7 +19,9 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -89,6 +91,12 @@ pub struct BatchedEvent {
 /// Maximum number of subscriptions per session (prevent abuse)
 const MAX_SUBSCRIPTIONS_PER_SESSION: usize = 100;
 
+/// Maximum connections per IP address
+const MAX_CONNECTIONS_PER_IP: usize = 50;
+
+/// Rate limit: max messages per second per session
+const MAX_MESSAGES_PER_SECOND: u32 = 100;
+
 /// State for WebSocket connections
 pub struct WsState {
     /// Broadcast channel for confirmation events
@@ -101,6 +109,8 @@ pub struct WsState {
     session_subscription_counts: RwLock<HashMap<u64, usize>>,
     /// Next session ID
     next_session_id: RwLock<u64>,
+    /// Per-IP active connection count
+    per_ip_connections: RwLock<HashMap<IpAddr, usize>>,
 }
 
 impl WsState {
@@ -114,6 +124,33 @@ impl WsState {
             subscriptions: RwLock::new(HashMap::new()),
             session_subscription_counts: RwLock::new(HashMap::new()),
             next_session_id: RwLock::new(0),
+            per_ip_connections: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Track a new connection from an IP address
+    /// Returns false if the IP has exceeded the connection limit
+    pub async fn track_connection(&self, ip: IpAddr) -> bool {
+        let mut connections = self.per_ip_connections.write().await;
+        let count = connections.entry(ip).or_insert(0);
+        if *count >= MAX_CONNECTIONS_PER_IP {
+            warn!("Connection limit exceeded for IP {}", ip);
+            return false;
+        }
+        *count += 1;
+        debug!("IP {} now has {} connections", ip, *count);
+        true
+    }
+
+    /// Release a connection from an IP address
+    pub async fn release_connection(&self, ip: IpAddr) {
+        let mut connections = self.per_ip_connections.write().await;
+        if let Some(count) = connections.get_mut(&ip) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                connections.remove(&ip);
+            }
+            debug!("IP {} now has {} connections", ip, connections.get(&ip).unwrap_or(&0));
         }
     }
 
@@ -259,6 +296,7 @@ pub async fn ws_handler<S: WsAppState + HasAllowedOrigins>(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
     State(state): State<S>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
     // Validate origin before accepting WebSocket upgrade
     let allowed_origins = state.allowed_origins();
@@ -267,15 +305,22 @@ pub async fn ws_handler<S: WsAppState + HasAllowedOrigins>(
         return (StatusCode::FORBIDDEN, "Invalid origin").into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state)).into_response()
+    // Check per-IP connection limit
+    let ip = addr.ip();
+    if !state.ws_state().track_connection(ip).await {
+        warn!("WebSocket connection rejected: too many connections from {}", ip);
+        return (StatusCode::TOO_MANY_REQUESTS, "Too many connections from this IP").into_response();
+    }
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state, ip)).into_response()
 }
 
 /// Handle a WebSocket connection
-async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S) {
+async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S, client_ip: IpAddr) {
     let ws_state = state.ws_state();
     let session_id = ws_state.allocate_session_id().await;
 
-    info!("WebSocket connection {} established", session_id);
+    info!("WebSocket connection {} established from {}", session_id, client_ip);
 
     let (mut sender, mut receiver) = socket.split();
 
@@ -367,8 +412,28 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S) {
         }
     });
 
+    // Message rate limiting state
+    let mut last_message_time = Instant::now();
+    let mut message_count: u32 = 0;
+    let rate_limit_window = Duration::from_secs(1);
+
     // Main receive loop
     while let Some(result) = receiver.next().await {
+        // Rate limit check
+        let now = Instant::now();
+        if now.duration_since(last_message_time) > rate_limit_window {
+            message_count = 0;
+            last_message_time = now;
+        }
+        message_count += 1;
+        if message_count > MAX_MESSAGES_PER_SECOND {
+            warn!("Session {} rate limit exceeded", session_id);
+            let _ = tx.send(ServerMessage::Error {
+                message: "Rate limit exceeded".to_string(),
+            }).await;
+            break; // Close connection
+        }
+
         match result {
             Ok(Message::Text(text)) => {
                 match serde_json::from_str::<ClientMessage>(&text) {
@@ -422,6 +487,7 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S) {
     // Cleanup
     info!("WebSocket connection {} closed", session_id);
     ws_state.unsubscribe_all(session_id).await;
+    ws_state.release_connection(client_ip).await;
 
     // Cancel tasks
     send_task.abort();

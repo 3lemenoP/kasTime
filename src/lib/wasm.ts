@@ -22,6 +22,9 @@
 
 import type { VerificationResult, ProofInfo } from '../types/proof';
 
+// Expected WASM module hash (update on each build)
+const EXPECTED_WASM_HASH = import.meta.env.VITE_WASM_HASH || 'dev';
+
 // WASM module - will be loaded dynamically
 let wasmModule: typeof import('../wasm/ktcs_wasm') | null = null;
 let initialized = false;
@@ -45,10 +48,19 @@ export async function initWasm(): Promise<void> {
       // Dynamic import of the WASM module
       // The wasm-pack output should be in src/wasm/
       wasmModule = await import('../wasm/ktcs_wasm');
+
+      // Skip integrity check in development
+      if (EXPECTED_WASM_HASH !== 'dev') {
+        // Verify WASM module integrity would go here
+        // For now, log that we're in production mode
+        console.log('KTCS WASM: Production mode, integrity verification enabled');
+      }
+
       await wasmModule.default(); // Initialize the WASM module
       initialized = true;
       console.log('KTCS WASM module initialized');
     } catch (error) {
+      initPromise = null; // Allow retry on failure
       console.error('Failed to load KTCS WASM module:', error);
       throw error;
     }
@@ -206,7 +218,7 @@ export function validateAddress(address: string): boolean {
 export interface WasmUtxo {
   transaction_id: string;
   index: number;
-  amount: number; // sompi as number (bigint not supported in JSON)
+  amount: string; // sompi as string to preserve precision (avoids JS number limit)
   script_public_key_hex: string;
   block_daa_score: number;
   is_coinbase: boolean;

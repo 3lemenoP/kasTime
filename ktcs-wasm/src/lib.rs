@@ -355,7 +355,7 @@ pub fn validate_address(address: &str) -> bool {
 pub struct WasmUtxo {
     pub transaction_id: String,  // hex
     pub index: u32,
-    pub amount: u64,             // sompi
+    pub amount: String,          // sompi as string to preserve precision
     pub script_public_key_hex: String,
     pub block_daa_score: u64,
     pub is_coinbase: bool,
@@ -464,10 +464,14 @@ pub fn build_commitment_transaction(
             let script = hex::decode(&u.script_public_key_hex)
                 .map_err(|e| JsValue::from_str(&format!("Invalid script hex: {}", e)))?;
 
+            // Parse amount from string to preserve precision for large values
+            let amount: u64 = u.amount.parse()
+                .map_err(|e| JsValue::from_str(&format!("Invalid amount: {}", e)))?;
+
             Ok(Utxo {
                 transaction_id: tx_id_array,
                 index: u.index,
-                amount: u.amount,
+                amount,
                 script_public_key: ScriptPublicKey {
                     version: 0,
                     script,
@@ -574,10 +578,14 @@ pub fn sign_transaction(
             let script = hex::decode(&u.script_public_key_hex)
                 .map_err(|e| JsValue::from_str(&format!("Invalid script hex: {}", e)))?;
 
+            // Parse amount from string to preserve precision for large values
+            let amount: u64 = u.amount.parse()
+                .map_err(|e| JsValue::from_str(&format!("Invalid amount: {}", e)))?;
+
             Ok(Utxo {
                 transaction_id: tx_id_array,
                 index: u.index,
-                amount: u.amount,
+                amount,
                 script_public_key: ScriptPublicKey {
                     version: 0,
                     script,
@@ -597,31 +605,14 @@ pub fn sign_transaction(
         // Build sighash transaction structure
         let sighash_tx = build_sighash_transaction(&tx, &utxos)?;
 
-        // Debug: log sighash input data
-        let sighash_input = &sighash_tx.inputs[i];
-        web_sys::console::log_1(&format!(
-            "DEBUG SIGHASH INPUT {}: prev_tx={} index={} spk_version={} spk={} value={} seq={}",
-            i,
-            hex::encode(sighash_input.previous_outpoint_hash),
-            sighash_input.previous_outpoint_index,
-            sighash_input.script_public_key_version,
-            hex::encode(&sighash_input.script_public_key),
-            sighash_input.value,
-            sighash_input.sequence
-        ).into());
-
         // Compute sighash
         let sighash = compute_kaspa_sighash(&sighash_tx, i, SigHashType::All)
             .map_err(|e| JsValue::from_str(&format!("Sighash computation failed: {}", e)))?;
-
-        web_sys::console::log_1(&format!("DEBUG SIGHASH: {}", hex::encode(sighash)).into());
 
         // Sign with wallet
         let signature = wallet
             .sign(&sighash)
             .map_err(|e| JsValue::from_str(&format!("Signing failed: {}", e)))?;
-
-        web_sys::console::log_1(&format!("DEBUG SIGNATURE: {}", hex::encode(&signature)).into());
 
         // Build signature script for P2PK: only <signature with sighash type>
         // The pubkey is already in the scriptPubKey, so we don't include it here

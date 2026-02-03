@@ -818,6 +818,12 @@ async fn cmd_upgrade(
 
         // Verify we can deserialize the complete proof
         let complete_proof = deserialize_proof(&complete_proof_bytes)?;
+
+        // Security: Verify proof digest matches original
+        if complete_proof.digest != proof.digest {
+            return Err("Security error: calendar returned proof with different digest".into());
+        }
+
         if !complete_proof.is_complete() {
             println!("{}", "Warning: Calendar returned incomplete proof".yellow());
         }

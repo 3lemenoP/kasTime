@@ -255,7 +255,6 @@ async fn test_mainnet_wallet_generation() {
     println!("  └─────────────────────────────────────────────────────┘");
     println!();
     println!("  Address:     {}", wallet.address());
-    println!("  Private Key: {}", private_key_hex);
     println!();
 
     // Save to file for later use
@@ -268,7 +267,7 @@ async fn test_mainnet_wallet_generation() {
     println!("  1. Fund the address above with ~0.1 KAS");
     println!("  2. Set environment variables:");
     println!("     set KTCS_TEST_ADDRESS={}", wallet.address());
-    println!("     set KTCS_TEST_WALLET={}", private_key_hex);
+    println!("     set KTCS_TEST_WALLET=<see-key-file>");
     println!("  3. Run: cargo test test_mainnet_stamp_transaction --features kaspa-client -- --ignored --nocapture");
     println!();
 

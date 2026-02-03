@@ -11,11 +11,12 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
 use tower::ServiceBuilder;
-use tower_governor::{governor::GovernorConfigBuilder, key_extractor::PeerIpKeyExtractor, GovernorLayer};
+use tower_governor::{governor::GovernorConfigBuilder, key_extractor::{KeyExtractor, PeerIpKeyExtractor}, GovernorError, GovernorLayer};
 use tower_http::{
     cors::CorsLayer,
     limit::RequestBodyLimitLayer,
@@ -189,6 +190,44 @@ struct ServerConfig {
     api_key: Option<String>,
     /// Require API key for write operations
     require_api_key: bool,
+    /// Trust X-Forwarded-For header for client IP (use when behind reverse proxy)
+    trust_proxy: bool,
+}
+
+/// Proxy-aware IP key extractor for rate limiting
+/// When trust_proxy is true, checks X-Forwarded-For header first
+#[derive(Clone)]
+struct ProxyAwareIpExtractor {
+    trust_proxy: bool,
+}
+
+impl KeyExtractor for ProxyAwareIpExtractor {
+    type Key = IpAddr;
+
+    fn extract<T>(&self, req: &axum::http::Request<T>) -> Result<Self::Key, GovernorError> {
+        if self.trust_proxy {
+            // Check X-Forwarded-For header (first IP is the original client)
+            if let Some(xff) = req.headers().get("x-forwarded-for") {
+                if let Ok(xff_str) = xff.to_str() {
+                    if let Some(first_ip) = xff_str.split(',').next() {
+                        if let Ok(ip) = first_ip.trim().parse::<IpAddr>() {
+                            return Ok(ip);
+                        }
+                    }
+                }
+            }
+            // Also check X-Real-IP header (used by nginx)
+            if let Some(real_ip) = req.headers().get("x-real-ip") {
+                if let Ok(ip_str) = real_ip.to_str() {
+                    if let Ok(ip) = ip_str.trim().parse::<IpAddr>() {
+                        return Ok(ip);
+                    }
+                }
+            }
+        }
+        // Fall back to peer IP
+        PeerIpKeyExtractor.extract(req)
+    }
 }
 
 /// Configuration validation error
@@ -337,6 +376,10 @@ impl ServerConfig {
                 .ok()
                 .map(|s| s == "true" || s == "1")
                 .unwrap_or(false),
+            trust_proxy: std::env::var("TRUST_PROXY")
+                .ok()
+                .map(|s| s == "true" || s == "1")
+                .unwrap_or(false),
         }
     }
 }
@@ -384,9 +427,19 @@ async fn api_key_middleware(
             let provided_bytes = provided.as_bytes();
             let expected_bytes = expected_key.as_bytes();
 
-            // Length check combined with constant-time byte comparison
-            let keys_match = provided_bytes.len() == expected_bytes.len()
-                && bool::from(provided_bytes.ct_eq(expected_bytes));
+            // Constant-time comparison that doesn't leak length
+            let expected_len = expected_bytes.len();
+            let provided_len = provided_bytes.len();
+
+            // Pad provided bytes to expected length for constant-time comparison
+            let mut provided_padded = vec![0u8; expected_len];
+            let copy_len = provided_len.min(expected_len);
+            provided_padded[..copy_len].copy_from_slice(&provided_bytes[..copy_len]);
+
+            // Both length mismatch and content mismatch return false in constant time
+            let lengths_equal = provided_len.ct_eq(&expected_len);
+            let bytes_equal = provided_padded.ct_eq(expected_bytes);
+            let keys_match = bool::from(lengths_equal & bytes_equal);
 
             if keys_match {
                 Ok(next.run(request).await)
@@ -517,6 +570,31 @@ async fn main() {
         }
     });
 
+    // Start database cleanup task (every 24 hours)
+    let cleanup_db = state.database.clone();
+    let mut cleanup_shutdown_rx = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(86400)); // 24 hours
+        loop {
+            tokio::select! {
+                _ = cleanup_shutdown_rx.recv() => {
+                    info!("Database cleanup task received shutdown signal");
+                    break;
+                }
+                _ = interval.tick() => {
+                    // Delete confirmed stamps older than 30 days
+                    match cleanup_db.delete_old_stamps(30 * 86400).await {
+                        Ok(deleted) if deleted > 0 => {
+                            info!("Database cleanup: removed {} old stamps", deleted);
+                        }
+                        Err(e) => warn!("Database cleanup failed: {}", e),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    });
+
     // Start recycle service task (if dual-wallet recycling is enabled)
     if state.kaspa_service.is_recycling_enabled() {
         let recycle_service = Arc::new(RecycleService::new(state.kaspa_service.clone()));
@@ -546,12 +624,16 @@ async fn main() {
         });
     }
 
-    // Configure rate limiting with peer IP extraction (works for localhost)
+    // Configure rate limiting with proxy-aware IP extraction
+    let key_extractor = ProxyAwareIpExtractor { trust_proxy: server_config.trust_proxy };
+    if server_config.trust_proxy {
+        info!("Rate limiter configured to trust X-Forwarded-For/X-Real-IP headers");
+    }
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
             .per_second(server_config.rate_limit_per_second as u64)
             .burst_size(server_config.rate_limit_burst)
-            .key_extractor(PeerIpKeyExtractor)
+            .key_extractor(key_extractor)
             .finish()
             .expect("Failed to create rate limiter config")
     );

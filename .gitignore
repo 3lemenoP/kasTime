@@ -4,11 +4,16 @@ node_modules/
 # Build outputs
 dist/
 build/
+site/
 
 # Environment files
 .env
 .env.local
 .env.*.local
+
+# Private keys (DO NOT COMMIT)
+*.key
+*.pem
 
 # Editor directories and files
 .vscode/*

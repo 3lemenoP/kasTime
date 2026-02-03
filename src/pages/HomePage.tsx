@@ -182,15 +182,6 @@ function HomePage(): JSX.Element {
         setRpcConnected(true);
 
         const utxoList = await kaspaClientRef.current.getUtxosByAddress(walletAddress);
-        const wasmUtxos = utxoList.map((u) => ({
-          transaction_id: u.transactionId,
-          index: u.index,
-          amount: Number(u.amount),
-          script_public_key_hex: u.scriptPublicKey.scriptPublicKey,
-          block_daa_score: Number(u.blockDaaScore),
-          is_coinbase: u.isCoinbase,
-        }));
-
         setUtxos(utxoList);
         setDirectStep('idle');
       } catch (e) {
@@ -302,7 +293,7 @@ function HomePage(): JSX.Element {
       const wasmUtxos: WasmUtxo[] = utxos.map((u) => ({
         transaction_id: u.transactionId,
         index: u.index,
-        amount: Number(u.amount),
+        amount: u.amount.toString(), // Preserve precision as string for WASM
         script_public_key_hex: getScriptHex(u.scriptPublicKey),
         block_daa_score: Number(u.blockDaaScore),
         is_coinbase: u.isCoinbase,

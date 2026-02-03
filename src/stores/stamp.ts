@@ -348,16 +348,14 @@ export const useStampStore = create<StampState>()(
         },
       }),
       partialize: (state) => ({
-        // ONLY persist proof display data - NOT sensitive wallet info
+        // Only persist the proof itself for later download
+        // All other data is transient and regenerated on each session
         confirmedProof: state.confirmedProof,
-        blockInfo: state.blockInfo,
-        transactionId: state.transactionId,
-        hash: state.hash,
-        fileName: state.fileName,
         // NEVER persist:
-        // - walletKey (security)
+        // - walletKey (security - critical)
         // - walletAddress (can be re-derived)
         // - utxos, walletBalance (stale data)
+        // - blockInfo, transactionId, hash, fileName (metadata exposure)
       }),
     }
   )

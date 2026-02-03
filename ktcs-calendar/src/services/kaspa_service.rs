@@ -400,6 +400,7 @@ impl KaspaService {
             request_timeout_ms: 30_000,
             auto_reconnect: true,
             use_resolver: false, // We use explicit RPC URL from config
+            tls_verify: true,    // Always verify TLS certificates
         };
 
         // Initialize wallet if key is provided

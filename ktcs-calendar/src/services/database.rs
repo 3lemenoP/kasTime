@@ -306,7 +306,6 @@ impl Database {
 
     /// Delete old confirmed stamps (for cleanup)
     /// Used for periodic maintenance
-    #[allow(dead_code)]
     pub async fn delete_old_stamps(&self, older_than_secs: i64) -> Result<u64> {
         let cutoff = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
