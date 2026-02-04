@@ -12,6 +12,8 @@
 //!
 //! Note: Kaspa does NOT support OP_RETURN. We use P2PK burn outputs instead.
 
+use std::collections::HashSet;
+
 use crate::error::{KtcsError, Result};
 use crate::kaspa_types::{
     build_commitment_output, ScriptPublicKey, Transaction, TransactionInput, TransactionOutput,
@@ -20,14 +22,14 @@ use crate::kaspa_types::{
 use crate::merkle::sha256;
 use crate::wallet::decode_address;
 
+// Re-export DUST_THRESHOLD from kaspa_types
+pub use crate::kaspa_types::DUST_THRESHOLD;
+
 /// Minimum fee rate in sompi per gram (mass unit)
 pub const MIN_FEE_PER_GRAM: u64 = 1;
 
 /// Default fee rate in sompi per gram
 pub const DEFAULT_FEE_PER_GRAM: u64 = 1;
-
-/// Dust threshold - outputs below this are rejected
-pub const DUST_THRESHOLD: u64 = 546;
 
 /// Maximum OP_RETURN data size in bytes
 pub const MAX_OP_RETURN_SIZE: usize = 80;
@@ -78,6 +80,8 @@ pub struct TransactionBuilder {
     fee_per_gram: u64,
     #[allow(dead_code)]
     include_ktcs_magic: bool,
+    /// Tracks seen outpoints to prevent duplicate UTXOs
+    seen_outpoints: HashSet<([u8; 32], u32)>,
 }
 
 impl TransactionBuilder {
@@ -90,6 +94,7 @@ impl TransactionBuilder {
             change_script: None,
             fee_per_gram: DEFAULT_FEE_PER_GRAM,
             include_ktcs_magic: false,
+            seen_outpoints: HashSet::new(),
         }
     }
 
@@ -100,17 +105,41 @@ impl TransactionBuilder {
     }
 
     /// Add a UTXO input
-    pub fn add_input(mut self, utxo: Utxo) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the same UTXO (transaction_id + index) is added twice.
+    pub fn add_input(mut self, utxo: Utxo) -> Result<Self> {
+        let outpoint = (utxo.transaction_id, utxo.index);
+        if !self.seen_outpoints.insert(outpoint) {
+            return Err(KtcsError::Other(format!(
+                "Duplicate UTXO: {}:{}",
+                hex::encode(utxo.transaction_id),
+                utxo.index
+            )));
+        }
         self.inputs.push((utxo, Vec::new()));
-        self
+        Ok(self)
     }
 
     /// Add multiple UTXO inputs
-    pub fn add_inputs(mut self, utxos: impl IntoIterator<Item = Utxo>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any UTXO is a duplicate.
+    pub fn add_inputs(mut self, utxos: impl IntoIterator<Item = Utxo>) -> Result<Self> {
         for utxo in utxos {
+            let outpoint = (utxo.transaction_id, utxo.index);
+            if !self.seen_outpoints.insert(outpoint) {
+                return Err(KtcsError::Other(format!(
+                    "Duplicate UTXO: {}:{}",
+                    hex::encode(utxo.transaction_id),
+                    utxo.index
+                )));
+            }
             self.inputs.push((utxo, Vec::new()));
         }
-        self
+        Ok(self)
     }
 
     /// Set the change address (Kaspa address format)
@@ -175,7 +204,11 @@ impl TransactionBuilder {
         };
 
         // Calculate total input
-        let total_input: u64 = self.inputs.iter().map(|(u, _)| u.amount).sum();
+        let total_input: u64 = self.inputs
+            .iter()
+            .map(|(u, _)| u.amount)
+            .try_fold(0u64, |acc, amount| acc.checked_add(amount))
+            .ok_or_else(|| KtcsError::Other("Total input amount overflow".to_string()))?;
 
         // Build transaction
         let mut tx = Transaction::new();
@@ -193,11 +226,29 @@ impl TransactionBuilder {
         let commitment_output = build_commitment_output(&commitment);
         let commitment_amount = commitment_output.amount;
 
-        // Calculate transaction mass (for fee calculation)
-        let estimated_mass = estimate_transaction_mass(self.inputs.len(), 2);
+        // First, estimate fee with 2 outputs to see if change is needed
+        let estimated_mass_2_outputs = estimate_transaction_mass(self.inputs.len(), 2)?;
+        let fee_2_outputs = estimated_mass_2_outputs
+            .checked_mul(self.fee_per_gram)
+            .ok_or_else(|| KtcsError::Other("Fee calculation overflow".to_string()))?;
+        let total_required_2_outputs = fee_2_outputs
+            .checked_add(commitment_amount)
+            .ok_or_else(|| KtcsError::Other("Total required overflow".to_string()))?;
 
-        let fee = estimated_mass * self.fee_per_gram;
-        let total_required = fee + commitment_amount;
+        // Determine if we'll have a change output
+        let preliminary_change = total_input.saturating_sub(total_required_2_outputs);
+        let has_change_output = preliminary_change >= DUST_THRESHOLD;
+
+        // Calculate actual fee based on whether we have a change output
+        let num_outputs = if has_change_output { 2 } else { 1 };
+        let estimated_mass = estimate_transaction_mass(self.inputs.len(), num_outputs)?;
+
+        let fee = estimated_mass
+            .checked_mul(self.fee_per_gram)
+            .ok_or_else(|| KtcsError::Other("Fee calculation overflow".to_string()))?;
+        let total_required = fee
+            .checked_add(commitment_amount)
+            .ok_or_else(|| KtcsError::Other("Total required overflow".to_string()))?;
 
         // Calculate change
         if total_input < total_required {
@@ -209,33 +260,35 @@ impl TransactionBuilder {
 
         let change_amount = total_input - total_required;
 
-        // Check dust threshold
-        if change_amount > 0 && change_amount < DUST_THRESHOLD {
-            return Err(KtcsError::Other(format!(
-                "Change amount {} is below dust threshold {}",
-                change_amount, DUST_THRESHOLD
-            )));
-        }
+        // Check dust threshold - if change is below dust, absorb it into the fee
+        let (final_change_amount, final_fee) = if change_amount > 0 && change_amount < DUST_THRESHOLD {
+            // Absorb dust change into the fee
+            (0, fee + change_amount)
+        } else {
+            (change_amount, fee)
+        };
 
         // Add outputs
         tx.add_output(commitment_output);
 
-        if change_amount > 0 {
+        if final_change_amount > 0 {
             tx.add_output(TransactionOutput {
-                amount: change_amount,
+                amount: final_change_amount,
                 script_public_key: change_script,
             });
         }
 
-        let total_output = commitment_amount + change_amount;
+        let total_output = commitment_amount
+            .checked_add(final_change_amount)
+            .ok_or_else(|| KtcsError::Other("Total output overflow".to_string()))?;
 
         Ok(CommitmentTransaction {
             transaction: tx,
             commitment,
             total_input,
             total_output,
-            fee,
-            change_amount,
+            fee: final_fee,
+            change_amount: final_change_amount,
         })
     }
 }
@@ -249,16 +302,23 @@ impl Default for TransactionBuilder {
 /// Estimate transaction mass for fee calculation
 ///
 /// Kaspa uses "mass" as a measure of transaction resource consumption.
-fn estimate_transaction_mass(num_inputs: usize, num_outputs: usize) -> u64 {
+fn estimate_transaction_mass(num_inputs: usize, num_outputs: usize) -> Result<u64> {
     // Approximate mass values (should match Kaspa consensus rules)
     const BASE_MASS: u64 = 10;
     const INPUT_MASS: u64 = 148; // Typical P2PKH input
     const OUTPUT_MASS: u64 = 34; // Typical P2PKH output
 
-    let input_total = INPUT_MASS * num_inputs as u64;
-    let output_total = OUTPUT_MASS * num_outputs as u64;
+    let input_total = INPUT_MASS
+        .checked_mul(num_inputs as u64)
+        .ok_or_else(|| KtcsError::Other("Input mass overflow".to_string()))?;
+    let output_total = OUTPUT_MASS
+        .checked_mul(num_outputs as u64)
+        .ok_or_else(|| KtcsError::Other("Output mass overflow".to_string()))?;
 
-    BASE_MASS + input_total + output_total
+    BASE_MASS
+        .checked_add(input_total)
+        .and_then(|v| v.checked_add(output_total))
+        .ok_or_else(|| KtcsError::Other("Total mass overflow".to_string()))
 }
 
 /// Convert a Kaspa address to a script public key
@@ -319,21 +379,33 @@ pub fn select_utxos(
 
     for utxo in sorted {
         selected.push(utxo.clone());
-        total += utxo.amount;
+        total = total
+            .checked_add(utxo.amount)
+            .ok_or_else(|| KtcsError::Other("UTXO total overflow".to_string()))?;
 
         // Estimate fee with current selection
-        let estimated_mass = estimate_transaction_mass(selected.len(), 2);
-        let estimated_fee = estimated_mass * fee_per_gram;
+        let estimated_mass = estimate_transaction_mass(selected.len(), 2)?;
+        let estimated_fee = estimated_mass
+            .checked_mul(fee_per_gram)
+            .ok_or_else(|| KtcsError::Other("Estimated fee overflow".to_string()))?;
 
-        if total >= target_amount + estimated_fee {
+        let required = target_amount
+            .checked_add(estimated_fee)
+            .ok_or_else(|| KtcsError::Other("Required amount overflow".to_string()))?;
+
+        if total >= required {
             return Ok((selected, total));
         }
     }
 
     // Calculate what we needed
-    let final_mass = estimate_transaction_mass(selected.len(), 2);
-    let final_fee = final_mass * fee_per_gram;
-    let needed = target_amount + final_fee;
+    let final_mass = estimate_transaction_mass(selected.len(), 2)?;
+    let final_fee = final_mass
+        .checked_mul(fee_per_gram)
+        .ok_or_else(|| KtcsError::Other("Final fee overflow".to_string()))?;
+    let needed = target_amount
+        .checked_add(final_fee)
+        .ok_or_else(|| KtcsError::Other("Needed amount overflow".to_string()))?;
 
     Err(KtcsError::Other(format!(
         "Insufficient funds: have {} sompi, need {} sompi",
@@ -425,11 +497,17 @@ impl TransferTransactionBuilder {
 
         let dest_script = address_to_script(&destination)?;
 
-        let total_input: u64 = self.inputs.iter().map(|u| u.amount).sum();
+        let total_input: u64 = self.inputs
+            .iter()
+            .map(|u| u.amount)
+            .try_fold(0u64, |acc, amount| acc.checked_add(amount))
+            .ok_or_else(|| KtcsError::Other("Total input amount overflow".to_string()))?;
 
         // Calculate fee
-        let estimated_mass = estimate_transfer_mass(self.inputs.len());
-        let fee = estimated_mass * self.fee_per_gram;
+        let estimated_mass = estimate_transfer_mass(self.inputs.len())?;
+        let fee = estimated_mass
+            .checked_mul(self.fee_per_gram)
+            .ok_or_else(|| KtcsError::Other("Fee calculation overflow".to_string()))?;
 
         if total_input <= fee {
             return Err(KtcsError::Other(format!(
@@ -478,12 +556,19 @@ impl Default for TransferTransactionBuilder {
 }
 
 /// Estimate transaction mass for a simple transfer
-fn estimate_transfer_mass(num_inputs: usize) -> u64 {
+fn estimate_transfer_mass(num_inputs: usize) -> Result<u64> {
     const BASE_MASS: u64 = 10;
     const INPUT_MASS: u64 = 148;
     const OUTPUT_MASS: u64 = 34;
 
-    BASE_MASS + (INPUT_MASS * num_inputs as u64) + OUTPUT_MASS
+    let input_total = INPUT_MASS
+        .checked_mul(num_inputs as u64)
+        .ok_or_else(|| KtcsError::Other("Input mass overflow".to_string()))?;
+
+    BASE_MASS
+        .checked_add(input_total)
+        .and_then(|v| v.checked_add(OUTPUT_MASS))
+        .ok_or_else(|| KtcsError::Other("Total mass overflow".to_string()))
 }
 
 #[cfg(test)]
@@ -527,6 +612,7 @@ mod tests {
         let result = TransactionBuilder::new()
             .commitment(&commitment)
             .add_input(utxo)
+            .unwrap()
             .change_address(wallet.address())
             .fee_per_gram(1)
             .build();
@@ -580,5 +666,41 @@ mod tests {
         assert_eq!(script.script.len(), 34);
         assert_eq!(script.script[33], 0xac);
         assert_eq!(&script.script[1..33], &wallet.public_key());
+    }
+
+    #[test]
+    fn test_duplicate_utxo_detection() {
+        let utxo1 = create_test_utxo(100_000_000, 0);
+        let utxo2 = create_test_utxo(100_000_000, 0); // Same outpoint as utxo1
+
+        // Adding the same UTXO twice should fail
+        let result = TransactionBuilder::new()
+            .add_input(utxo1)
+            .unwrap()
+            .add_input(utxo2);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Duplicate UTXO"));
+    }
+
+    #[test]
+    fn test_multiple_different_utxos() {
+        let wallet = test_wallet();
+        let commitment = [0xab; 32];
+        let utxo1 = create_test_utxo(50_000_000, 0);
+        let utxo2 = create_test_utxo(50_000_000, 1); // Different index
+
+        // Adding different UTXOs should succeed
+        let result = TransactionBuilder::new()
+            .commitment(&commitment)
+            .add_input(utxo1)
+            .unwrap()
+            .add_input(utxo2)
+            .unwrap()
+            .change_address(wallet.address())
+            .build();
+
+        assert!(result.is_ok());
     }
 }

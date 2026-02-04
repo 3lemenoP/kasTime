@@ -17,6 +17,7 @@ use ktcs_core::{
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
+use zeroize::Zeroize;
 
 /// Initialize panic hook for better error messages in console
 #[wasm_bindgen(start)]
@@ -282,20 +283,28 @@ pub struct WasmWalletInfo {
 /// Kaspa address string or error
 #[wasm_bindgen]
 pub fn get_wallet_address(private_key_hex: &str, network: &str) -> Result<String, JsValue> {
-    let key_bytes = hex::decode(private_key_hex)
+    // Decode key into mutable buffer for zeroization
+    let mut key_bytes = hex::decode(private_key_hex)
         .map_err(|e| JsValue::from_str(&format!("Invalid hex: {}", e)))?;
 
     if key_bytes.len() != 32 {
+        key_bytes.zeroize();
         return Err(JsValue::from_str("Private key must be 32 bytes (64 hex chars)"));
     }
 
     let mut key_array = [0u8; 32];
     key_array.copy_from_slice(&key_bytes);
+    key_bytes.zeroize(); // Clear Vec immediately after copying
 
-    let wallet = KaspaWallet::from_private_key(&key_array, network)
-        .map_err(|e| JsValue::from_str(&format!("Failed to create wallet: {}", e)))?;
+    // Use closure to ensure cleanup even on error
+    let result = (|| {
+        let wallet = KaspaWallet::from_private_key(&key_array, network)
+            .map_err(|e| JsValue::from_str(&format!("Failed to create wallet: {}", e)))?;
+        Ok(wallet.address().to_string())
+    })();
 
-    Ok(wallet.address().to_string())
+    key_array.zeroize(); // Clear array after use
+    result
 }
 
 /// Get wallet info (address and public key)
@@ -308,33 +317,44 @@ pub fn get_wallet_address(private_key_hex: &str, network: &str) -> Result<String
 /// WasmWalletInfo as JsValue
 #[wasm_bindgen]
 pub fn get_wallet_info(private_key_hex: &str, network: &str) -> Result<JsValue, JsValue> {
-    let key_bytes = hex::decode(private_key_hex)
+    // Decode key into mutable buffer for zeroization
+    let mut key_bytes = hex::decode(private_key_hex)
         .map_err(|e| JsValue::from_str(&format!("Invalid hex: {}", e)))?;
 
     if key_bytes.len() != 32 {
+        key_bytes.zeroize();
         return Err(JsValue::from_str("Private key must be 32 bytes (64 hex chars)"));
     }
 
     let mut key_array = [0u8; 32];
     key_array.copy_from_slice(&key_bytes);
+    key_bytes.zeroize(); // Clear Vec immediately after copying
 
-    let wallet = KaspaWallet::from_private_key(&key_array, network)
-        .map_err(|e| JsValue::from_str(&format!("Failed to create wallet: {}", e)))?;
+    // Use closure to ensure cleanup even on error
+    let result = (|| {
+        let wallet = KaspaWallet::from_private_key(&key_array, network)
+            .map_err(|e| JsValue::from_str(&format!("Failed to create wallet: {}", e)))?;
 
-    let info = WasmWalletInfo {
-        address: wallet.address().to_string(),
-        public_key: hex::encode(wallet.public_key()),
-        network: network.to_string(),
-    };
+        let info = WasmWalletInfo {
+            address: wallet.address().to_string(),
+            public_key: hex::encode(wallet.public_key()),
+            network: network.to_string(),
+        };
 
-    serde_wasm_bindgen::to_value(&info).map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
+        serde_wasm_bindgen::to_value(&info).map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
+    })();
+
+    key_array.zeroize(); // Clear array after use
+    result
 }
 
 /// Validate a private key format
 #[wasm_bindgen]
 pub fn validate_private_key(private_key_hex: &str) -> bool {
-    if let Ok(bytes) = hex::decode(private_key_hex) {
-        bytes.len() == 32
+    if let Ok(mut bytes) = hex::decode(private_key_hex) {
+        let valid = bytes.len() == 32;
+        bytes.zeroize(); // Clear key material from memory
+        valid
     } else {
         false
     }
@@ -492,6 +512,7 @@ pub fn build_commitment_transaction(
     let tx_result = TransactionBuilder::new()
         .commitment(&commitment)
         .add_inputs(selected_utxos)
+        .map_err(|e| JsValue::from_str(&format!("Failed to add inputs: {}", e)))?
         .change_address(change_address)
         .fee_per_gram(fee_per_gram)
         .build()
@@ -541,106 +562,114 @@ pub fn sign_transaction(
     private_key_hex: &str,
     network: &str,
 ) -> Result<JsValue, JsValue> {
-    // Parse private key
-    let key_bytes = hex::decode(private_key_hex)
+    // Decode key into mutable buffer for zeroization
+    let mut key_bytes = hex::decode(private_key_hex)
         .map_err(|e| JsValue::from_str(&format!("Invalid private key hex: {}", e)))?;
 
     if key_bytes.len() != 32 {
+        key_bytes.zeroize();
         return Err(JsValue::from_str("Private key must be 32 bytes"));
     }
 
     let mut key_array = [0u8; 32];
     key_array.copy_from_slice(&key_bytes);
+    key_bytes.zeroize(); // Clear Vec immediately after copying
 
-    let wallet = KaspaWallet::from_private_key(&key_array, network)
-        .map_err(|e| JsValue::from_str(&format!("Failed to create wallet: {}", e)))?;
+    // Use closure to ensure cleanup even on error
+    let result = (|| {
+        let wallet = KaspaWallet::from_private_key(&key_array, network)
+            .map_err(|e| JsValue::from_str(&format!("Failed to create wallet: {}", e)))?;
 
-    // Parse transaction
-    let mut tx: Transaction = serde_json::from_str(unsigned_tx_json)
-        .map_err(|e| JsValue::from_str(&format!("Invalid transaction JSON: {}", e)))?;
+        // Parse transaction
+        let mut tx: Transaction = serde_json::from_str(unsigned_tx_json)
+            .map_err(|e| JsValue::from_str(&format!("Invalid transaction JSON: {}", e)))?;
 
-    // Parse UTXOs
-    let wasm_utxos: Vec<WasmUtxo> = serde_json::from_str(utxos_json)
-        .map_err(|e| JsValue::from_str(&format!("Invalid UTXOs JSON: {}", e)))?;
+        // Parse UTXOs
+        let wasm_utxos: Vec<WasmUtxo> = serde_json::from_str(utxos_json)
+            .map_err(|e| JsValue::from_str(&format!("Invalid UTXOs JSON: {}", e)))?;
 
-    // Convert to Utxo structs
-    let utxos: Result<Vec<Utxo>, JsValue> = wasm_utxos
-        .into_iter()
-        .map(|u| {
-            let tx_id = hex::decode(&u.transaction_id)
-                .map_err(|e| JsValue::from_str(&format!("Invalid tx_id hex: {}", e)))?;
-            if tx_id.len() != 32 {
-                return Err(JsValue::from_str("Transaction ID must be 32 bytes"));
-            }
-            let mut tx_id_array = [0u8; 32];
-            tx_id_array.copy_from_slice(&tx_id);
+        // Convert to Utxo structs
+        let utxos: Result<Vec<Utxo>, JsValue> = wasm_utxos
+            .into_iter()
+            .map(|u| {
+                let tx_id = hex::decode(&u.transaction_id)
+                    .map_err(|e| JsValue::from_str(&format!("Invalid tx_id hex: {}", e)))?;
+                if tx_id.len() != 32 {
+                    return Err(JsValue::from_str("Transaction ID must be 32 bytes"));
+                }
+                let mut tx_id_array = [0u8; 32];
+                tx_id_array.copy_from_slice(&tx_id);
 
-            let script = hex::decode(&u.script_public_key_hex)
-                .map_err(|e| JsValue::from_str(&format!("Invalid script hex: {}", e)))?;
+                let script = hex::decode(&u.script_public_key_hex)
+                    .map_err(|e| JsValue::from_str(&format!("Invalid script hex: {}", e)))?;
 
-            // Parse amount from string to preserve precision for large values
-            let amount: u64 = u.amount.parse()
-                .map_err(|e| JsValue::from_str(&format!("Invalid amount: {}", e)))?;
+                // Parse amount from string to preserve precision for large values
+                let amount: u64 = u.amount.parse()
+                    .map_err(|e| JsValue::from_str(&format!("Invalid amount: {}", e)))?;
 
-            Ok(Utxo {
-                transaction_id: tx_id_array,
-                index: u.index,
-                amount,
-                script_public_key: ScriptPublicKey {
-                    version: 0,
-                    script,
-                },
-                block_daa_score: u.block_daa_score,
-                is_coinbase: u.is_coinbase,
+                Ok(Utxo {
+                    transaction_id: tx_id_array,
+                    index: u.index,
+                    amount,
+                    script_public_key: ScriptPublicKey {
+                        version: 0,
+                        script,
+                    },
+                    block_daa_score: u.block_daa_score,
+                    is_coinbase: u.is_coinbase,
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    let utxos = utxos?;
+        let utxos = utxos?;
 
-    // First, compute all signatures (borrowing tx immutably)
-    let mut signatures: Vec<Vec<u8>> = Vec::with_capacity(tx.inputs.len());
+        // First, compute all signatures (borrowing tx immutably)
+        let mut signatures: Vec<Vec<u8>> = Vec::with_capacity(tx.inputs.len());
 
-    for i in 0..tx.inputs.len() {
-        // Build sighash transaction structure
-        let sighash_tx = build_sighash_transaction(&tx, &utxos)?;
+        for i in 0..tx.inputs.len() {
+            // Build sighash transaction structure
+            let sighash_tx = build_sighash_transaction(&tx, &utxos)?;
 
-        // Compute sighash
-        let sighash = compute_kaspa_sighash(&sighash_tx, i, SigHashType::All)
-            .map_err(|e| JsValue::from_str(&format!("Sighash computation failed: {}", e)))?;
+            // Compute sighash
+            let sighash = compute_kaspa_sighash(&sighash_tx, i, SigHashType::All)
+                .map_err(|e| JsValue::from_str(&format!("Sighash computation failed: {}", e)))?;
 
-        // Sign with wallet
-        let signature = wallet
-            .sign(&sighash)
-            .map_err(|e| JsValue::from_str(&format!("Signing failed: {}", e)))?;
+            // Sign with wallet
+            let signature = wallet
+                .sign(&sighash)
+                .map_err(|e| JsValue::from_str(&format!("Signing failed: {}", e)))?;
 
-        // Build signature script for P2PK: only <signature with sighash type>
-        // The pubkey is already in the scriptPubKey, so we don't include it here
-        let mut sig_script = Vec::with_capacity(66);
-        sig_script.push(65); // Push 65 bytes (64-byte sig + 1-byte sighash type)
-        sig_script.extend_from_slice(&signature);
-        sig_script.push(SigHashType::All as u8); // Sighash type byte
+            // Build signature script for P2PK: only <signature with sighash type>
+            // The pubkey is already in the scriptPubKey, so we don't include it here
+            let mut sig_script = Vec::with_capacity(66);
+            sig_script.push(65); // Push 65 bytes (64-byte sig + 1-byte sighash type)
+            sig_script.extend_from_slice(&signature);
+            sig_script.push(SigHashType::All as u8); // Sighash type byte
 
-        signatures.push(sig_script);
-    }
+            signatures.push(sig_script);
+        }
 
-    // Now apply signatures to transaction (borrowing tx mutably)
-    for (input, sig_script) in tx.inputs.iter_mut().zip(signatures.into_iter()) {
-        input.signature_script = sig_script;
-    }
+        // Now apply signatures to transaction (borrowing tx mutably)
+        for (input, sig_script) in tx.inputs.iter_mut().zip(signatures.into_iter()) {
+            input.signature_script = sig_script;
+        }
 
-    // Compute transaction ID (hash of signed transaction)
-    let tx_id = compute_transaction_id(&tx);
+        // Compute transaction ID (hash of signed transaction)
+        let tx_id = compute_transaction_id(&tx);
 
-    let signed_tx_json = serde_json::to_string(&tx)
-        .map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))?;
+        let signed_tx_json = serde_json::to_string(&tx)
+            .map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))?;
 
-    let result = WasmSignedTransaction {
-        transaction_json: signed_tx_json,
-        transaction_id: hex::encode(tx_id),
-    };
+        let result = WasmSignedTransaction {
+            transaction_json: signed_tx_json,
+            transaction_id: hex::encode(tx_id),
+        };
 
-    serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
+        serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
+    })();
+
+    key_array.zeroize(); // Clear array after use
+    result
 }
 
 /// Build sighash transaction structure for signing

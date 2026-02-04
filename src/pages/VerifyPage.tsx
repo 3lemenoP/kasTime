@@ -19,8 +19,8 @@ function convertApiResponse(apiResult: VerifyResponse): VerificationResult {
       attestationType: att.type,
       complete: att.type !== 'pending',
       blockHash: att.block_hash,
-      daaScore: att.daa_score,
-      blueScore: att.blue_score,
+      daaScore: att.daa_score ? parseInt(att.daa_score, 10) : undefined,
+      blueScore: att.blue_score ? parseInt(att.blue_score, 10) : undefined,
     })),
     error: apiResult.error,
   }
@@ -34,7 +34,7 @@ function VerifyPage(): JSX.Element {
   const [verificationMode, setVerificationMode] = useState<'full' | 'light'>('full')
   const [isVerifying, setIsVerifying] = useState(false)
   const [result, setResult] = useState<VerificationResult | null>(null)
-  const [proofInfo, setProofInfo] = useState<ProofInfo | null>(null)
+  const [_proofInfo, setProofInfo] = useState<ProofInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const handleProofDrop = async (file: File) => {

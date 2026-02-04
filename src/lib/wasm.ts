@@ -95,6 +95,9 @@ function ensureInitialized() {
 export function verifyProof(proofBytes: Uint8Array, data?: Uint8Array): VerificationResult {
   ensureInitialized();
   const result = wasmModule!.verify_proof(proofBytes, data || null);
+  if (!result || typeof result !== 'object' || !('valid' in result)) {
+    throw new Error('WASM verify_proof returned unexpected result');
+  }
   return result as VerificationResult;
 }
 
@@ -108,8 +111,17 @@ export function parseProof(proofBytes: Uint8Array): ProofInfo | null {
   ensureInitialized();
   try {
     const result = wasmModule!.parse_proof(proofBytes);
-    if (result && typeof result === 'object' && 'Ok' in result) {
-      return result.Ok as ProofInfo;
+    if (result && typeof result === 'object') {
+      if ('Ok' in result) return result.Ok as ProofInfo;
+      if ('Err' in result) {
+        console.error('WASM parse_proof error:', result.Err);
+        return null;
+      }
+    }
+    // Validate expected shape
+    if (!result || typeof result !== 'object' || !('version' in result)) {
+      console.error('Unexpected parseProof result shape');
+      return null;
     }
     return result as ProofInfo;
   } catch (e) {
@@ -259,7 +271,7 @@ export function generateNonce(): string {
  */
 export function getCommitmentBurnAmount(): number {
   ensureInitialized();
-  return wasmModule!.get_commitment_burn_amount();
+  return Number(wasmModule!.get_commitment_burn_amount());
 }
 
 /**

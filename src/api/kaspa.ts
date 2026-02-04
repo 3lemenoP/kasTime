@@ -87,10 +87,7 @@ export class KaspaClient {
   private eventCallbacks: Map<string, RpcCallback[]> = new Map();
   private connectPromise: Promise<void> | null = null;
   private requestTimeout = 30000; // 30 seconds
-  private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
   private connected = false;
-  private connecting = false;
 
   constructor(rpcUrl: string) {
     this.rpcUrl = rpcUrl;
@@ -103,10 +100,8 @@ export class KaspaClient {
     if (this.connected) return;
     if (this.connectPromise) return this.connectPromise;
 
-    this.connecting = true;
     this.connectPromise = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.connecting = false;
         this.connectPromise = null;
         reject(new Error('Connection timeout'));
       }, 15000);
@@ -116,15 +111,12 @@ export class KaspaClient {
       this.ws.onopen = () => {
         clearTimeout(timeout);
         this.connected = true;
-        this.connecting = false;
-        this.reconnectAttempts = 0;
         console.log('[Kaspa] Connected to', this.rpcUrl);
         resolve();
       };
 
       this.ws.onerror = (error) => {
         clearTimeout(timeout);
-        this.connecting = false;
         this.connectPromise = null;
         console.error('[Kaspa] WebSocket error:', error);
         reject(new Error('WebSocket connection failed'));
@@ -132,7 +124,6 @@ export class KaspaClient {
 
       this.ws.onclose = () => {
         this.connected = false;
-        this.connecting = false;
         this.connectPromise = null;
         console.log('[Kaspa] Connection closed');
 
@@ -161,7 +152,6 @@ export class KaspaClient {
       this.ws = null;
     }
     this.connected = false;
-    this.connecting = false;
     this.connectPromise = null;
   }
 
@@ -327,43 +317,9 @@ export class KaspaClient {
     return result.transactionId;
   }
 
-  /**
-   * Submit a signed transaction (legacy - may have precision issues)
-   * @deprecated Use submitTransactionFromWasm instead
-   */
-  async submitTransaction(tx: KaspaSignedTransaction): Promise<string> {
-    // Convert to Kaspa RPC format - use camelCase field names (matches Rust serde)
-    const rpcTx = {
-      version: tx.version,
-      inputs: tx.inputs.map((inp) => ({
-        previousOutpoint: {
-          transactionId: inp.previousOutpoint.transactionId,
-          index: inp.previousOutpoint.index,
-        },
-        signatureScript: inp.signatureScript,
-        sequence: 0, // Must match sighash computation
-        sigOpCount: inp.sigOpCount,
-      })),
-      outputs: tx.outputs.map((out) => ({
-        value: Number(out.value),
-        scriptPublicKey: {
-          version: out.scriptPublicKey.version,
-          script: out.scriptPublicKey.scriptPublicKey,
-        },
-      })),
-      lockTime: Number(tx.lockTime),
-      subnetworkId: tx.subnetworkId, // Keep as-is, don't manipulate
-      gas: 0,
-      payload: '',
-      mass: 0,
-    };
-
-    const result = await this.sendRequest<{ transactionId: string }>(
-      'submitTransaction',
-      { transaction: rpcTx, allowOrphan: false }
-    );
-
-    return result.transactionId;
+  /** @deprecated Use submitTransactionFromWasm instead to avoid precision loss */
+  async submitTransaction(_tx: KaspaSignedTransaction): Promise<string> {
+    throw new Error('Deprecated: Use submitTransactionFromWasm to avoid BigInt precision loss');
   }
 
   /**

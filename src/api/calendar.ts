@@ -26,6 +26,8 @@ export class CalendarClient {
   private reconnectAttempts = 0;
   private maxReconnectDelay = 30000; // Max 30 seconds between attempts
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private pendingMessages: string[] = [];
+  private requestTimeout = 30000; // Default 30 second timeout for API requests
 
   /**
    * Create a new calendar client
@@ -64,6 +66,28 @@ export class CalendarClient {
   }
 
   /**
+   * Fetch with timeout support
+   * @param url - URL to fetch
+   * @param options - Fetch options
+   * @returns Fetch response
+   */
+  private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.requestTimeout);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timeoutId);
+      return response;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      if (e instanceof Error && e.name === 'AbortError') {
+        throw new Error('Request timed out');
+      }
+      throw e;
+    }
+  }
+
+  /**
    * Submit a digest for timestamping
    * @param digest - Hex-encoded SHA256 hash
    * @param mode - Batching mode (default: 'standard')
@@ -76,7 +100,7 @@ export class CalendarClient {
       batch_mode: mode,
     };
 
-    const response = await fetch(`${this.baseUrl}/v1/stamp`, {
+    const response = await this.fetchWithTimeout(`${this.baseUrl}/v1/stamp`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -98,7 +122,7 @@ export class CalendarClient {
    * @returns Current stamp status and proof if confirmed
    */
   async getStamp(id: string): Promise<StampResponse> {
-    const response = await fetch(`${this.baseUrl}/v1/stamp/${id}`);
+    const response = await this.fetchWithTimeout(`${this.baseUrl}/v1/stamp/${id}`);
 
     if (!response.ok) {
       if (response.status === 404) {
@@ -117,12 +141,12 @@ export class CalendarClient {
    * @returns Verification result
    */
   async verify(proofData: Uint8Array): Promise<VerifyResponse> {
-    const response = await fetch(`${this.baseUrl}/v1/verify`, {
+    const response = await this.fetchWithTimeout(`${this.baseUrl}/v1/verify`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/octet-stream',
       },
-      body: proofData,
+      body: proofData as unknown as BodyInit,
     });
 
     if (!response.ok) {
@@ -138,7 +162,7 @@ export class CalendarClient {
    * @returns Health status
    */
   async health(): Promise<HealthResponse> {
-    const response = await fetch(`${this.baseUrl}/health`);
+    const response = await this.fetchWithTimeout(`${this.baseUrl}/health`);
 
     if (!response.ok) {
       throw new Error('Health check failed');
@@ -148,7 +172,15 @@ export class CalendarClient {
   }
 
   /**
-   * Subscribe to confirmation events for a proof via WebSocket
+   * Subscribe to confirmation events for a proof via WebSocket.
+   * IMPORTANT: Always call the returned unsubscribe function in cleanup!
+   *
+   * @example
+   * useEffect(() => {
+   *   const unsubscribe = client.subscribeToConfirmation(id, callback);
+   *   return unsubscribe; // Critical for cleanup
+   * }, [id]);
+   *
    * @param proofId - Stamp ID to subscribe to
    * @param callback - Called when the proof is confirmed
    * @returns Unsubscribe function
@@ -160,17 +192,20 @@ export class CalendarClient {
     this.subscriptions.set(proofId, callback);
     this.ensureWebSocket();
 
-    // Send subscribe message
+    // Queue message if not yet connected
+    const message = JSON.stringify({ type: 'subscribe', proof_id: proofId });
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'subscribe', proof_id: proofId }));
+      this.ws.send(message);
+    } else {
+      this.pendingMessages.push(message);
     }
 
     return () => {
       this.subscriptions.delete(proofId);
-      // Send unsubscribe message
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ type: 'unsubscribe', proof_id: proofId }));
       }
+      // Close WebSocket if no more subscriptions
       if (this.subscriptions.size === 0) {
         this.closeWebSocket();
       }
@@ -199,6 +234,13 @@ export class CalendarClient {
       console.log('[KTCS] WebSocket connected');
       // Reset reconnect attempts on successful connection
       this.reconnectAttempts = 0;
+
+      // Flush pending messages
+      for (const msg of this.pendingMessages) {
+        this.ws?.send(msg);
+      }
+      this.pendingMessages = [];
+
       // Re-subscribe to all pending subscriptions
       for (const proofId of this.subscriptions.keys()) {
         this.ws?.send(JSON.stringify({ type: 'subscribe', proof_id: proofId }));
@@ -214,6 +256,9 @@ export class CalendarClient {
             callback(msg);
             this.subscriptions.delete(msg.proof_id);
           }
+        } else if (msg.type === 'batched') {
+          console.log('[KTCS] Proof entered batching:', msg.proof_id);
+          // Could emit an event or update state here if needed
         }
       } catch (e) {
         console.error('Failed to parse WebSocket message:', e);
@@ -232,7 +277,14 @@ export class CalendarClient {
         // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (capped)
         const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelay);
         console.log(`[KTCS] WebSocket closed, reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-        this.reconnectTimeout = setTimeout(() => this.ensureWebSocket(), delay);
+        this.reconnectTimeout = setTimeout(() => {
+          // Re-check if still needed before reconnecting
+          if (this.subscriptions.size > 0) {
+            this.ensureWebSocket();
+          } else {
+            this.reconnectAttempts = 0;
+          }
+        }, delay);
       }
     };
   }

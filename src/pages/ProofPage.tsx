@@ -8,10 +8,7 @@ import type { StampResponse, WsConfirmedMessage } from '../types/api'
 
 const CALENDAR_URL = import.meta.env.VITE_CALENDAR_URL || 'http://localhost:3001'
 
-interface ParentBlock {
-  hash: string
-  daaScore: number
-}
+// ParentBlock interface removed - not currently used
 
 function ProofPage(): JSX.Element {
   const { id } = useParams()
@@ -38,8 +35,8 @@ function ProofPage(): JSX.Element {
         status: 'confirmed',
         submitted_at: new Date().toISOString(),
         confirmed_at: new Date(Number(directBlockInfo.timestamp)).toISOString(),
-        daa_score: Number(directBlockInfo.daaScore),
-        blue_score: Number(directBlockInfo.blueScore),
+        daa_score: String(directBlockInfo.daaScore),
+        blue_score: String(directBlockInfo.blueScore),
         block_hash: directBlockInfo.hash,
         tx_hash: directTxId || undefined,
         proof: directConfirmedProof,
@@ -128,7 +125,8 @@ function ProofPage(): JSX.Element {
         }
 
         // Fallback polling in case WebSocket fails (less frequent: 5s)
-        if (isMounted && data.status !== 'confirmed') {
+        // Note: If we reach here, status is not 'confirmed' (early return above)
+        if (isMounted) {
           pollTimeout = setTimeout(fetchStamp, 5000)
         }
       } catch (err) {
@@ -212,7 +210,8 @@ function ProofPage(): JSX.Element {
       return response.thermodynamic_weight.blue_work_at_confirmation
     }
     if (response?.blue_score) {
-      return `${(response.blue_score * 1e9).toExponential(2)}`
+      const blueScoreNum = parseInt(response.blue_score, 10)
+      return `${(blueScoreNum * 1e9).toExponential(2)}`
     }
     return 'calculating...'
   }
@@ -220,10 +219,14 @@ function ProofPage(): JSX.Element {
   // ~1 BTC confirmation per hour of Kaspa (36000 blocks at 10 BPS)
   function computeBtcEquivalent(): string {
     if (!response?.blue_score) return '0'
-    return (response.blue_score / 36000).toFixed(1)
+    const blueScoreNum = parseInt(response.blue_score, 10)
+    return (blueScoreNum / 36000).toFixed(1)
   }
 
   // Use real data if available, otherwise fallback to display values
+  const daaScoreNum = response?.daa_score ? parseInt(response.daa_score, 10) : 0
+  const blueScoreNum = response?.blue_score ? parseInt(response.blue_score, 10) : 0
+
   const proof = {
     id,
     status: response?.status || 'pending',
@@ -232,12 +235,12 @@ function ProofPage(): JSX.Element {
     size: response?.proof ? atob(response.proof).length : 0,
     block: {
       hash: response?.block_hash || 'pending...',
-      daaScore: response?.daa_score || 0,
-      blueScore: response?.blue_score || 0,
+      daaScore: daaScoreNum,
+      blueScore: blueScoreNum,
       timestamp: response?.confirmed_at || new Date().toISOString(),
       parents: (response?.parent_hashes || []).map((hash) => ({
         hash,
-        daaScore: response?.daa_score ? response.daa_score - 1 : 0,
+        daaScore: response?.daa_score ? String(parseInt(response.daa_score, 10) - 1) : '0',
       })),
     },
     tx: {

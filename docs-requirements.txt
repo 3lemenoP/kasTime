@@ -1,0 +1,5 @@
+# MkDocs Material documentation site dependencies
+# Install: pip install -r docs-requirements.txt
+
+mkdocs-material>=9.5
+mkdocs-minify-plugin>=0.7

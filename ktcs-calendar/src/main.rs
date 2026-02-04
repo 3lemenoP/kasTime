@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::broadcast;
 use tower::ServiceBuilder;
 use tower_governor::{governor::GovernorConfigBuilder, key_extractor::{KeyExtractor, PeerIpKeyExtractor}, GovernorError, GovernorLayer};
 use tower_http::{
@@ -41,7 +41,8 @@ use services::recycle_service::RecycleService;
 /// Application state shared across handlers
 #[derive(Clone)]
 struct AppState {
-    batch_manager: Arc<RwLock<BatchManager>>,
+    /// Thread-safe batch manager (has internal synchronization)
+    batch_manager: Arc<BatchManager>,
     /// SQLite database for persistent stamp storage
     database: Arc<Database>,
     kaspa_service: Arc<KaspaService>,
@@ -419,6 +420,9 @@ async fn api_key_middleware(
         return Ok(next.run(request).await);
     };
 
+    // Maximum API key length for fixed-size buffer comparison
+    const MAX_API_KEY_LEN: usize = 128;
+
     // Check X-API-Key header
     match request.headers().get("X-API-Key") {
         Some(provided_key) => {
@@ -427,18 +431,21 @@ async fn api_key_middleware(
             let provided_bytes = provided.as_bytes();
             let expected_bytes = expected_key.as_bytes();
 
-            // Constant-time comparison that doesn't leak length
-            let expected_len = expected_bytes.len();
+            // Use fixed-size buffers to avoid leaking timing info through dynamic allocation
             let provided_len = provided_bytes.len();
+            let expected_len = expected_bytes.len();
 
-            // Pad provided bytes to expected length for constant-time comparison
-            let mut provided_padded = vec![0u8; expected_len];
-            let copy_len = provided_len.min(expected_len);
-            provided_padded[..copy_len].copy_from_slice(&provided_bytes[..copy_len]);
+            let mut provided_padded = [0u8; MAX_API_KEY_LEN];
+            let mut expected_padded = [0u8; MAX_API_KEY_LEN];
+
+            let provided_copy = provided_len.min(MAX_API_KEY_LEN);
+            let expected_copy = expected_len.min(MAX_API_KEY_LEN);
+            provided_padded[..provided_copy].copy_from_slice(&provided_bytes[..provided_copy]);
+            expected_padded[..expected_copy].copy_from_slice(&expected_bytes[..expected_copy]);
 
             // Both length mismatch and content mismatch return false in constant time
             let lengths_equal = provided_len.ct_eq(&expected_len);
-            let bytes_equal = provided_padded.ct_eq(expected_bytes);
+            let bytes_equal = provided_padded.ct_eq(&expected_padded);
             let keys_match = bool::from(lengths_equal & bytes_equal);
 
             if keys_match {
@@ -532,7 +539,7 @@ async fn main() {
 
     // Initialize application state
     let state = AppState {
-        batch_manager: Arc::new(RwLock::new(BatchManager::new())),
+        batch_manager: Arc::new(BatchManager::new()),
         database,
         kaspa_service,
         ws_state,
@@ -806,10 +813,16 @@ async fn submit_stamp(
             (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
         })?;
 
-    // Add to batch manager
-    {
-        let mut batch_manager = state.batch_manager.write().await;
-        batch_manager.add_digest(id.clone(), digest, req.batch_mode);
+    // Add to batch manager (may fail if pending limit exceeded)
+    if !state.batch_manager.add_digest(id.clone(), digest, req.batch_mode).await {
+        // Clean up the database record we just saved
+        if let Err(e) = state.database.delete_stamp(&id).await {
+            error!("Failed to clean up stamp after batch limit exceeded: {}", e);
+        }
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Server is at capacity. Please try again later.".to_string(),
+        ));
     }
 
     info!("Stamp submitted: {} (mode: {:?})", id, req.batch_mode);
@@ -1062,10 +1075,8 @@ async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receive
             _ = shutdown.recv() => {
                 info!("Batch processor received shutdown signal, draining current batch...");
                 // Process any remaining ready batches before exiting
-                let ready_batches: Vec<(BatchMode, Vec<PendingStamp>)> = {
-                    let mut batch_manager = state.batch_manager.write().await;
-                    batch_manager.get_ready_batches()
-                };
+                let ready_batches: Vec<(BatchMode, Vec<PendingStamp>)> =
+                    state.batch_manager.get_ready_batches().await;
                 if !ready_batches.is_empty() {
                     info!("Processing {} remaining batches before shutdown", ready_batches.len());
                 }
@@ -1079,10 +1090,8 @@ async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receive
         }
 
         // Check for batches ready to commit
-        let ready_batches: Vec<(BatchMode, Vec<PendingStamp>)> = {
-            let mut batch_manager = state.batch_manager.write().await;
-            batch_manager.get_ready_batches()
-        };
+        let ready_batches: Vec<(BatchMode, Vec<PendingStamp>)> =
+            state.batch_manager.get_ready_batches().await;
 
         for (mode, stamps) in ready_batches {
             if stamps.is_empty() {
@@ -1128,12 +1137,19 @@ async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receive
                     tracing::error!("Failed to submit commitment: {}", e);
 
                     // Requeue stamps for retry instead of discarding
-                    {
-                        let mut batch_manager = state.batch_manager.write().await;
-                        for stamp in &stamps {
-                            batch_manager.add_digest(stamp.id.clone(), stamp.digest, mode);
+                    let mut requeued = 0;
+                    for stamp in &stamps {
+                        if state.batch_manager.add_digest(stamp.id.clone(), stamp.digest, mode).await {
+                            requeued += 1;
                         }
-                        tracing::info!("Requeued {} stamps for retry", stamps.len());
+                    }
+                    if requeued < stamps.len() {
+                        tracing::warn!(
+                            "Could not requeue all stamps: {} of {} (pending limit reached)",
+                            requeued, stamps.len()
+                        );
+                    } else {
+                        tracing::info!("Requeued {} stamps for retry", requeued);
                     }
 
                     // Add backoff delay to avoid rapid retry loops
@@ -1257,7 +1273,7 @@ mod tests {
         );
 
         AppState {
-            batch_manager: Arc::new(RwLock::new(BatchManager::new())),
+            batch_manager: Arc::new(BatchManager::new()),
             database,
             kaspa_service,
             ws_state: Arc::new(WsState::new()),
@@ -1400,10 +1416,8 @@ mod tests {
             for _ in 0..50 {
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-                let ready_batches: Vec<(BatchMode, Vec<PendingStamp>)> = {
-                    let mut batch_manager = batch_state.batch_manager.write().await;
-                    batch_manager.get_ready_batches()
-                };
+                let ready_batches: Vec<(BatchMode, Vec<PendingStamp>)> =
+                    batch_state.batch_manager.get_ready_batches().await;
 
                 for (_mode, stamps) in ready_batches {
                     if stamps.is_empty() {

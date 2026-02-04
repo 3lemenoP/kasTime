@@ -645,6 +645,7 @@ impl KaspaService {
         let tx = TransactionBuilder::new()
             .commitment(&commitment)
             .add_inputs(utxos.clone())
+            .map_err(|e| KaspaServiceError::SubmissionFailed(e.to_string()))?
             .change_address(change_address)
             .fee_per_gram(self.config.fee_per_gram)
             .include_magic(self.config.include_magic)

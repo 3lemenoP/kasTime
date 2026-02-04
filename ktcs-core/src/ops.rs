@@ -40,8 +40,23 @@ pub fn apply_operation(current: &[u8], op: &Operation) -> Result<Vec<u8>> {
     }
 }
 
+/// Maximum number of operations allowed to prevent CPU DoS attacks
+pub const MAX_OPERATIONS_TO_APPLY: usize = 10_000;
+
 /// Apply a sequence of operations to a starting digest
+///
+/// # Errors
+///
+/// Returns an error if the number of operations exceeds `MAX_OPERATIONS_TO_APPLY`.
 pub fn apply_operations(digest: &[u8], operations: &[Operation]) -> Result<Vec<u8>> {
+    if operations.len() > MAX_OPERATIONS_TO_APPLY {
+        return Err(KtcsError::InvalidData(format!(
+            "Operation count {} exceeds limit {}",
+            operations.len(),
+            MAX_OPERATIONS_TO_APPLY
+        )));
+    }
+
     let mut current = digest.to_vec();
 
     for op in operations {

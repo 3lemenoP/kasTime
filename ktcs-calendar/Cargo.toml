@@ -29,6 +29,7 @@ tower_governor = "0.4"
 
 # WebSocket support
 tokio-tungstenite = "0.21"
+tokio-util = "0.7"
 futures-util = "0.3"
 
 # UUID for proof IDs

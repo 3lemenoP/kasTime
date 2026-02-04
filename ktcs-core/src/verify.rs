@@ -270,10 +270,7 @@ pub fn verify_kaspa_attestation(
     attestation: &KaspaAttestation,
     tx_payload: Option<&[u8]>,
 ) -> Result<bool> {
-    // Validate commitment length
-    if computed_commitment.len() != 32 {
-        return Ok(false);
-    }
+    // Note: computed_commitment is already [u8; 32], no length check needed
 
     // Validate attestation version
     if attestation.version != 0x01 {

@@ -1,0 +1,235 @@
+/* KTCS Documentation Theme - Kaspa Branding */
+
+:root {
+  /* Kaspa brand colors */
+  --kaspa-teal: #49EACB;
+  --kaspa-teal-dark: #3BC4A8;
+  --kaspa-teal-light: #6CF0D5;
+
+  /* Background colors */
+  --ktcs-bg-dark: #0A0C10;
+  --ktcs-surface: #1C212B;
+  --ktcs-surface-light: #252B38;
+
+  /* Text colors */
+  --ktcs-text: #FFFFFF;
+  --ktcs-text-muted: #8B949E;
+}
+
+/* Primary color overrides for Material theme */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--kaspa-teal);
+  --md-primary-fg-color--light: var(--kaspa-teal-light);
+  --md-primary-fg-color--dark: var(--kaspa-teal-dark);
+  --md-primary-bg-color: var(--ktcs-bg-dark);
+  --md-primary-bg-color--light: var(--ktcs-surface);
+
+  --md-accent-fg-color: var(--kaspa-teal);
+  --md-accent-fg-color--transparent: rgba(73, 234, 203, 0.1);
+  --md-accent-bg-color: var(--kaspa-teal);
+  --md-accent-bg-color--light: var(--kaspa-teal-light);
+
+  --md-default-bg-color: var(--ktcs-bg-dark);
+  --md-default-bg-color--light: var(--ktcs-surface);
+  --md-default-bg-color--lighter: var(--ktcs-surface-light);
+  --md-default-bg-color--lightest: #2D3545;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--kaspa-teal-dark);
+  --md-primary-fg-color--light: var(--kaspa-teal);
+  --md-primary-fg-color--dark: #2A9F87;
+
+  --md-accent-fg-color: var(--kaspa-teal-dark);
+  --md-accent-bg-color: var(--kaspa-teal);
+}
+
+/* Header styling */
+.md-header {
+  background-color: var(--ktcs-bg-dark);
+}
+
+[data-md-color-scheme="slate"] .md-header {
+  background-color: var(--ktcs-bg-dark);
+  border-bottom: 1px solid var(--ktcs-surface);
+}
+
+/* Navigation tabs */
+.md-tabs {
+  background-color: var(--ktcs-bg-dark);
+}
+
+[data-md-color-scheme="slate"] .md-tabs__link--active {
+  color: var(--kaspa-teal);
+}
+
+/* Hero subtitle on home page */
+.hero-subtitle {
+  font-size: 1.4rem;
+  color: var(--kaspa-teal);
+  font-weight: 500;
+  margin-bottom: 1.5rem;
+}
+
+[data-md-color-scheme="default"] .hero-subtitle {
+  color: var(--kaspa-teal-dark);
+}
+
+/* Code blocks */
+[data-md-color-scheme="slate"] .highlight {
+  background-color: var(--ktcs-surface) !important;
+}
+
+[data-md-color-scheme="slate"] code {
+  background-color: var(--ktcs-surface);
+}
+
+/* Inline code */
+[data-md-color-scheme="slate"] .md-typeset code {
+  background-color: rgba(73, 234, 203, 0.1);
+  color: var(--kaspa-teal);
+}
+
+/* Links */
+.md-typeset a {
+  color: var(--kaspa-teal);
+}
+
+.md-typeset a:hover {
+  color: var(--kaspa-teal-light);
+}
+
+/* Tables */
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) {
+  border: 1px solid var(--ktcs-surface-light);
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+  background-color: var(--ktcs-surface);
+  color: var(--kaspa-teal);
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) tr:hover {
+  background-color: var(--ktcs-surface);
+}
+
+/* Admonitions */
+[data-md-color-scheme="slate"] .md-typeset .admonition {
+  border-color: var(--kaspa-teal);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .admonition.info {
+  border-color: var(--kaspa-teal);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .admonition.info > .admonition-title {
+  background-color: rgba(73, 234, 203, 0.1);
+}
+
+/* Content tabs */
+[data-md-color-scheme="slate"] .md-typeset .tabbed-labels > label {
+  color: var(--ktcs-text-muted);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .tabbed-labels > label:hover {
+  color: var(--kaspa-teal);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .tabbed-set > input:checked + label {
+  color: var(--kaspa-teal);
+  border-color: var(--kaspa-teal);
+}
+
+/* Buttons */
+.md-typeset .md-button {
+  border-color: var(--kaspa-teal);
+  color: var(--kaspa-teal);
+}
+
+.md-typeset .md-button:hover {
+  background-color: var(--kaspa-teal);
+  color: var(--ktcs-bg-dark);
+  border-color: var(--kaspa-teal);
+}
+
+.md-typeset .md-button--primary {
+  background-color: var(--kaspa-teal);
+  color: var(--ktcs-bg-dark);
+  border-color: var(--kaspa-teal);
+}
+
+.md-typeset .md-button--primary:hover {
+  background-color: var(--kaspa-teal-light);
+  border-color: var(--kaspa-teal-light);
+}
+
+/* Search */
+[data-md-color-scheme="slate"] .md-search__input {
+  background-color: var(--ktcs-surface);
+}
+
+[data-md-color-scheme="slate"] .md-search__input::placeholder {
+  color: var(--ktcs-text-muted);
+}
+
+/* Cards grid */
+.grid.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1rem;
+}
+
+[data-md-color-scheme="slate"] .grid.cards > ul > li {
+  background-color: var(--ktcs-surface);
+  border: 1px solid var(--ktcs-surface-light);
+  border-radius: 8px;
+  padding: 1rem;
+  transition: border-color 0.2s ease;
+}
+
+[data-md-color-scheme="slate"] .grid.cards > ul > li:hover {
+  border-color: var(--kaspa-teal);
+}
+
+/* Footer */
+[data-md-color-scheme="slate"] .md-footer {
+  background-color: var(--ktcs-bg-dark);
+  border-top: 1px solid var(--ktcs-surface);
+}
+
+/* Sidebar navigation */
+[data-md-color-scheme="slate"] .md-nav__link--active {
+  color: var(--kaspa-teal);
+}
+
+[data-md-color-scheme="slate"] .md-nav__link:hover {
+  color: var(--kaspa-teal);
+}
+
+/* Code copy button */
+[data-md-color-scheme="slate"] .md-clipboard {
+  color: var(--ktcs-text-muted);
+}
+
+[data-md-color-scheme="slate"] .md-clipboard:hover {
+  color: var(--kaspa-teal);
+}
+
+/* Scrollbar styling for webkit browsers */
+[data-md-color-scheme="slate"] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+[data-md-color-scheme="slate"] ::-webkit-scrollbar-track {
+  background: var(--ktcs-bg-dark);
+}
+
+[data-md-color-scheme="slate"] ::-webkit-scrollbar-thumb {
+  background: var(--ktcs-surface-light);
+  border-radius: 4px;
+}
+
+[data-md-color-scheme="slate"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--kaspa-teal);
+}

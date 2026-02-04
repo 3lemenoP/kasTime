@@ -43,10 +43,10 @@ export interface StampResponse {
   // Confirmed fields (flat per spec - not nested)
   /** ISO 8601 timestamp of confirmation */
   confirmed_at?: string;
-  /** DAA score of confirming block */
-  daa_score?: number;
-  /** Blue score of confirming block */
-  blue_score?: number;
+  /** DAA score of confirming block (string for u64 precision) */
+  daa_score?: string;
+  /** Blue score of confirming block (string for u64 precision) */
+  blue_score?: string;
   /** Block hash (hex) */
   block_hash?: string;
   /** Transaction hash (hex) */
@@ -61,22 +61,22 @@ export interface StampResponse {
 
 /** Current confirmations info per spec Section 5.1.3 */
 export interface CurrentConfirmations {
-  /** Blocks since attestation */
-  blocks_since: number;
+  /** Blocks since attestation (string for u64 precision) */
+  blocks_since: string;
   /** Blue work accumulated (scientific notation) */
   blue_work_accumulated: string;
-  /** Time elapsed in seconds */
-  time_elapsed_seconds: number;
+  /** Time elapsed in seconds (string for u64 precision) */
+  time_elapsed_seconds: string;
 }
 
 /** Attestation information in verification response */
 export interface AttestationInfo {
   /** Type of attestation */
-  type: 'kaspa_block' | 'pending' | 'bitcoin';
-  /** DAA score (Kaspa only) */
-  daa_score?: number;
-  /** Blue score (Kaspa only) */
-  blue_score?: number;
+  type: 'kaspa' | 'pending' | 'bitcoin';
+  /** DAA score (Kaspa only, string for u64 precision) */
+  daa_score?: string;
+  /** Blue score (Kaspa only, string for u64 precision) */
+  blue_score?: string;
   /** Block hash (hex) */
   block_hash?: string;
   /** ISO 8601 timestamp */
@@ -134,9 +134,9 @@ export interface WsConfirmedMessage {
   type: 'confirmed';
   proof_id: string;
   block_hash: string;
-  daa_score: number;
-  blue_score: number;
-  timestamp: number;
+  daa_score: string; // string for u64 precision
+  blue_score: string; // string for u64 precision
+  timestamp: string; // string for u64 precision
   proof: string; // base64
 }
 
@@ -159,8 +159,14 @@ export interface WsErrorMessage {
   message: string;
 }
 
+export interface WsBatchedMessage {
+  type: 'batched';
+  proof_id: string;
+}
+
 export type WsServerMessage =
   | WsConfirmedMessage
+  | WsBatchedMessage
   | WsSubscribedMessage
   | WsUnsubscribedMessage
   | WsPongMessage

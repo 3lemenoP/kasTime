@@ -29,6 +29,7 @@ use crate::kaspa::{
     build_commitment_output, ScriptPublicKey, Transaction, TransactionInput, TransactionOutput,
     Utxo,
 };
+use crate::kaspa_types::DUST_THRESHOLD;
 use crate::merkle::sha256;
 
 /// Minimum fee rate in sompi per gram (mass unit)
@@ -36,9 +37,6 @@ pub const MIN_FEE_PER_GRAM: u64 = 1;
 
 /// Default fee rate in sompi per gram
 pub const DEFAULT_FEE_PER_GRAM: u64 = 1;
-
-/// Dust threshold - outputs below this are rejected
-pub const DUST_THRESHOLD: u64 = 546;
 
 /// Maximum OP_RETURN data size in bytes
 pub const MAX_OP_RETURN_SIZE: usize = 80;

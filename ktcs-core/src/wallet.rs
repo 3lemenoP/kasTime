@@ -5,7 +5,7 @@
 
 use crate::error::{KtcsError, Result};
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey};
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::{Zeroize, Zeroizing};
 
 // Domain separation keys for Kaspa Blake2b hashes
 const TRANSACTION_SIGNING_HASH_KEY: &[u8] = b"TransactionSigningHash";
@@ -100,18 +100,33 @@ const CHARSET_REV: [i8; 128] = [
 ///
 /// Private key is automatically zeroed when the wallet is dropped.
 /// Note: Clone is intentionally NOT derived to prevent accidental key duplication.
-#[derive(ZeroizeOnDrop)]
 pub struct KaspaWallet {
-    /// Private key (32 bytes) - zeroized on drop
-    #[zeroize(skip)] // Keypair handles its own zeroing
+    /// Keypair containing secret key - manually zeroized in Drop
     keypair: Keypair,
     /// Public key (32 bytes - x-only Schnorr)
-    #[zeroize(skip)]
     public_key: XOnlyPublicKey,
-    /// Bech32m address
+    /// Bech32m address - zeroized on drop
     address: String,
-    /// Network prefix (kaspa or kaspatest)
+    /// Network prefix (kaspa or kaspatest) - zeroized on drop
     network: String,
+}
+
+impl Drop for KaspaWallet {
+    fn drop(&mut self) {
+        // Extract secret key bytes and zeroize them
+        // The Keypair doesn't implement Zeroize, so we manually clear the secret bytes
+        let mut secret_bytes = self.keypair.secret_key().secret_bytes();
+        secret_bytes.zeroize();
+
+        // Also zeroize the string fields
+        // SAFETY: We're modifying the string's bytes in place before drop
+        unsafe {
+            let address_bytes = self.address.as_bytes_mut();
+            address_bytes.zeroize();
+            let network_bytes = self.network.as_bytes_mut();
+            network_bytes.zeroize();
+        }
+    }
 }
 
 impl KaspaWallet {

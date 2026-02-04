@@ -23,6 +23,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// WebSocket message from client
@@ -164,34 +165,37 @@ impl WsState {
 
     /// Subscribe a session to a proof ID
     /// Returns false if subscription limit exceeded
+    ///
+    /// SECURITY: Uses atomic lock scope to prevent TOCTOU race conditions.
+    /// Lock ordering: session_subscription_counts -> subscriptions (consistent with unsubscribe)
     async fn subscribe(&self, session_id: u64, proof_id: &str) -> bool {
-        // Check subscription limit
-        {
-            let counts = self.session_subscription_counts.read().await;
-            if let Some(&count) = counts.get(&session_id) {
-                if count >= MAX_SUBSCRIPTIONS_PER_SESSION {
-                    warn!(
-                        "Session {} exceeded subscription limit ({} max)",
-                        session_id, MAX_SUBSCRIPTIONS_PER_SESSION
-                    );
-                    return false;
-                }
-            }
-        }
-
-        // Validate proof_id format (basic validation)
+        // Validate proof_id format first (no locks needed)
         if proof_id.is_empty() || proof_id.len() > 64 {
             warn!("Session {} tried to subscribe to invalid proof_id", session_id);
             return false;
         }
 
+        // SECURITY: Acquire both locks in consistent order to prevent deadlock
+        // and perform check + add atomically to prevent TOCTOU race
+        let mut counts = self.session_subscription_counts.write().await;
+
+        // Check subscription limit while holding lock
+        let current_count = counts.get(&session_id).copied().unwrap_or(0);
+        if current_count >= MAX_SUBSCRIPTIONS_PER_SESSION {
+            warn!(
+                "Session {} exceeded subscription limit ({} max)",
+                session_id, MAX_SUBSCRIPTIONS_PER_SESSION
+            );
+            return false;
+        }
+
+        // Now acquire subscriptions lock (consistent order: counts -> subscriptions)
         let mut subs = self.subscriptions.write().await;
+
+        // Add subscription and update count atomically
         subs.entry(proof_id.to_string())
             .or_insert_with(HashSet::new)
             .insert(session_id);
-
-        // Update subscription count
-        let mut counts = self.session_subscription_counts.write().await;
         *counts.entry(session_id).or_insert(0) += 1;
 
         debug!("Session {} subscribed to {}", session_id, proof_id);
@@ -199,12 +203,16 @@ impl WsState {
     }
 
     /// Unsubscribe a session from a proof ID
+    ///
+    /// SECURITY: Lock ordering: counts -> subscriptions (consistent with subscribe)
     async fn unsubscribe(&self, session_id: u64, proof_id: &str) {
+        // Acquire locks in consistent order: counts -> subscriptions
+        let mut counts = self.session_subscription_counts.write().await;
         let mut subs = self.subscriptions.write().await;
+
         if let Some(sessions) = subs.get_mut(proof_id) {
             if sessions.remove(&session_id) {
                 // Decrement subscription count
-                let mut counts = self.session_subscription_counts.write().await;
                 if let Some(count) = counts.get_mut(&session_id) {
                     *count = count.saturating_sub(1);
                 }
@@ -217,8 +225,13 @@ impl WsState {
     }
 
     /// Unsubscribe a session from all proof IDs
+    ///
+    /// SECURITY: Lock ordering: counts -> subscriptions (consistent with subscribe/unsubscribe)
     async fn unsubscribe_all(&self, session_id: u64) {
+        // Acquire locks in consistent order: counts -> subscriptions
+        let mut counts = self.session_subscription_counts.write().await;
         let mut subs = self.subscriptions.write().await;
+
         for sessions in subs.values_mut() {
             sessions.remove(&session_id);
         }
@@ -226,7 +239,6 @@ impl WsState {
         subs.retain(|_, sessions| !sessions.is_empty());
 
         // Clean up session subscription count
-        let mut counts = self.session_subscription_counts.write().await;
         counts.remove(&session_id);
 
         debug!("Session {} unsubscribed from all", session_id);
@@ -335,18 +347,34 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S, client_ip: Ip
     // Track this session's subscriptions
     let session_subscriptions: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
 
+    // SECURITY: Use CancellationToken for graceful shutdown instead of abort()
+    let cancel_token = CancellationToken::new();
+
     // Task to send messages to client
-    let tx_clone = tx.clone();
+    let send_cancel = cancel_token.clone();
     let send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            match serde_json::to_string(&msg) {
-                Ok(json) => {
-                    if sender.send(Message::Text(json)).await.is_err() {
-                        break;
-                    }
+        loop {
+            tokio::select! {
+                _ = send_cancel.cancelled() => {
+                    debug!("Send task received cancellation signal");
+                    break;
                 }
-                Err(e) => {
-                    error!("Failed to serialize message: {}", e);
+                msg = rx.recv() => {
+                    match msg {
+                        Some(msg) => {
+                            match serde_json::to_string(&msg) {
+                                Ok(json) => {
+                                    if sender.send(Message::Text(json)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to serialize message: {}", e);
+                                }
+                            }
+                        }
+                        None => break,
+                    }
                 }
             }
         }
@@ -354,31 +382,41 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S, client_ip: Ip
 
     // Task to forward confirmations to subscribed clients
     let subs_clone = session_subscriptions.clone();
+    let tx_clone = tx.clone();
+    let confirm_cancel = cancel_token.clone();
     let confirm_task = tokio::spawn(async move {
         loop {
-            match confirmations_rx.recv().await {
-                Ok(event) => {
-                    // Check if this session is subscribed to this proof
-                    let subs = subs_clone.read().await;
-                    if subs.contains(&event.proof_id) {
-                        let msg = ServerMessage::Confirmed {
-                            proof_id: event.proof_id,
-                            block_hash: event.block_hash,
-                            daa_score: event.daa_score,
-                            blue_score: event.blue_score,
-                            timestamp: event.timestamp,
-                            proof: event.proof_base64,
-                        };
-                        if tx_clone.send(msg).await.is_err() {
+            tokio::select! {
+                _ = confirm_cancel.cancelled() => {
+                    debug!("Confirmation task received cancellation signal");
+                    break;
+                }
+                result = confirmations_rx.recv() => {
+                    match result {
+                        Ok(event) => {
+                            // Check if this session is subscribed to this proof
+                            let subs = subs_clone.read().await;
+                            if subs.contains(&event.proof_id) {
+                                let msg = ServerMessage::Confirmed {
+                                    proof_id: event.proof_id,
+                                    block_hash: event.block_hash,
+                                    daa_score: event.daa_score,
+                                    blue_score: event.blue_score,
+                                    timestamp: event.timestamp,
+                                    proof: event.proof_base64,
+                                };
+                                if tx_clone.send(msg).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("Session lagged behind by {} messages", n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
                             break;
                         }
                     }
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("Session lagged behind by {} messages", n);
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    break;
                 }
             }
         }
@@ -387,26 +425,35 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S, client_ip: Ip
     // Task to forward batched events to subscribed clients
     let subs_clone2 = session_subscriptions.clone();
     let tx_clone2 = tx.clone();
+    let batched_cancel = cancel_token.clone();
     let batched_task = tokio::spawn(async move {
         loop {
-            match batched_rx.recv().await {
-                Ok(event) => {
-                    // Check if this session is subscribed to this proof
-                    let subs = subs_clone2.read().await;
-                    if subs.contains(&event.proof_id) {
-                        let msg = ServerMessage::Batched {
-                            proof_id: event.proof_id,
-                        };
-                        if tx_clone2.send(msg).await.is_err() {
+            tokio::select! {
+                _ = batched_cancel.cancelled() => {
+                    debug!("Batched task received cancellation signal");
+                    break;
+                }
+                result = batched_rx.recv() => {
+                    match result {
+                        Ok(event) => {
+                            // Check if this session is subscribed to this proof
+                            let subs = subs_clone2.read().await;
+                            if subs.contains(&event.proof_id) {
+                                let msg = ServerMessage::Batched {
+                                    proof_id: event.proof_id,
+                                };
+                                if tx_clone2.send(msg).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("Session lagged behind by {} batched messages", n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
                             break;
                         }
                     }
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("Session lagged behind by {} batched messages", n);
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    break;
                 }
             }
         }
@@ -489,10 +536,18 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S, client_ip: Ip
     ws_state.unsubscribe_all(session_id).await;
     ws_state.release_connection(client_ip).await;
 
-    // Cancel tasks
-    send_task.abort();
-    confirm_task.abort();
-    batched_task.abort();
+    // SECURITY: Signal graceful shutdown to all tasks via CancellationToken
+    cancel_token.cancel();
+
+    // Wait for tasks to complete gracefully with timeout
+    let shutdown_timeout = Duration::from_secs(5);
+    let _ = tokio::time::timeout(shutdown_timeout, async {
+        let _ = send_task.await;
+        let _ = confirm_task.await;
+        let _ = batched_task.await;
+    }).await;
+
+    debug!("WebSocket connection {} cleanup complete", session_id);
 }
 
 #[cfg(test)]

@@ -11,6 +11,10 @@ const MAX_PARENT_HASHES: u64 = 1024;
 const MAX_OPERATION_DATA_SIZE: u64 = 1024 * 1024;
 /// Maximum URL length
 const MAX_URL_LENGTH: u64 = 2048;
+/// Maximum number of operations in a proof (DoS prevention)
+const MAX_OPERATIONS: usize = 10_000;
+/// Maximum number of attestations in a proof (DoS prevention)
+const MAX_ATTESTATIONS: usize = 100;
 
 /// Serialize a KTCS proof to binary .kts format
 pub fn serialize_proof(proof: &KtcsProof) -> Vec<u8> {
@@ -98,11 +102,23 @@ pub fn deserialize_proof(data: &[u8]) -> Result<KtcsProof> {
             let (attestation, new_cursor) = deserialize_attestation(data, cursor)?;
             attestations.push(attestation);
             cursor = new_cursor;
+            // Security: Prevent DoS via excessive attestation count
+            if attestations.len() > MAX_ATTESTATIONS {
+                return Err(KtcsError::InvalidData(
+                    format!("Too many attestations: max {}", MAX_ATTESTATIONS)
+                ));
+            }
         } else {
             // It's an operation
             let (operation, new_cursor) = deserialize_operation(data, cursor)?;
             operations.push(operation);
             cursor = new_cursor;
+            // Security: Prevent DoS via excessive operation count
+            if operations.len() > MAX_OPERATIONS {
+                return Err(KtcsError::InvalidData(
+                    format!("Too many operations: max {}", MAX_OPERATIONS)
+                ));
+            }
         }
     }
 

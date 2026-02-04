@@ -304,6 +304,21 @@ impl Database {
         Ok(row.get("count"))
     }
 
+    /// Delete a stamp by ID
+    /// Used for cleanup when batch limit is exceeded
+    pub async fn delete_stamp(&self, id: &str) -> Result<bool> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM stamps WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Delete old confirmed stamps (for cleanup)
     /// Used for periodic maintenance
     pub async fn delete_old_stamps(&self, older_than_secs: i64) -> Result<u64> {

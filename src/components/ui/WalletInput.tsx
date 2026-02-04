@@ -36,39 +36,16 @@ export default function WalletInput({
   const [error, setError] = useState<string | null>(null);
   const [deriving, setDeriving] = useState(false);
 
-  // Validate and derive address when key changes
+  // Best-effort cleanup on unmount - clear the input value
   useEffect(() => {
-    if (!value) {
-      setError(null);
-      onAddressChange(null);
-      return;
-    }
+    return () => {
+      // Only runs on unmount, not on onChange changes
+      onChange('');
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only run on unmount
+  }, []);
 
-    // Validate hex format
-    if (!/^[0-9a-fA-F]*$/.test(value)) {
-      setError('Invalid characters (hex only)');
-      onAddressChange(null);
-      return;
-    }
-
-    if (value.length < 64) {
-      setError(`${64 - value.length} more characters needed`);
-      onAddressChange(null);
-      return;
-    }
-
-    if (value.length > 64) {
-      setError('Too many characters');
-      onAddressChange(null);
-      return;
-    }
-
-    // Valid key - derive address
-    setError(null);
-    deriveAddress(value, network);
-  }, [value, network]);
-
-  // Derive address using WASM
+  // Derive address using WASM - defined before useEffect that calls it
   const deriveAddress = useCallback(
     async (key: string, net: string) => {
       setDeriving(true);
@@ -78,7 +55,8 @@ export default function WalletInput({
         const addr = wasm.getWalletAddress(key, net);
         onAddressChange(addr);
       } catch (e) {
-        console.error('Address derivation failed:', e);
+        // Never log the full error - may contain key material
+        console.error('Address derivation failed');
         setError('Invalid private key');
         onAddressChange(null);
       } finally {
@@ -87,6 +65,48 @@ export default function WalletInput({
     },
     [onAddressChange]
   );
+
+  // Validate and derive address when key changes
+  useEffect(() => {
+    if (!value) {
+      setError(null);
+      // Only call onAddressChange if address isn't already null to prevent infinite loops
+      if (address !== null) {
+        onAddressChange(null);
+      }
+      return;
+    }
+
+    // Validate hex format
+    if (!/^[0-9a-fA-F]*$/.test(value)) {
+      setError('Invalid characters (hex only)');
+      if (address !== null) {
+        onAddressChange(null);
+      }
+      return;
+    }
+
+    if (value.length < 64) {
+      setError(`${64 - value.length} more characters needed`);
+      if (address !== null) {
+        onAddressChange(null);
+      }
+      return;
+    }
+
+    if (value.length > 64) {
+      setError('Too many characters');
+      if (address !== null) {
+        onAddressChange(null);
+      }
+      return;
+    }
+
+    // Valid key - derive address
+    setError(null);
+    deriveAddress(value, network);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- address is checked but not a trigger
+  }, [value, network, deriveAddress]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // Only allow hex characters

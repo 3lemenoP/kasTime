@@ -168,20 +168,23 @@ impl MerkleTree {
         let mut siblings = Vec::new();
         let mut current_index = index;
 
-        // Handle padding: if index is past padded length, use padded index
-        if self.layers[0].len() > self.leaves.len() && index == self.leaves.len() - 1 {
-            // Last leaf might have been duplicated
-        }
-
         for layer in &self.layers[..self.layers.len() - 1] {
-            // Adjust index for padded layers
-            let layer_index = current_index.min(layer.len() - 1);
+            // Validate index is within bounds - no silent clamping
+            let layer_index = current_index;
+            debug_assert!(
+                layer_index < layer.len(),
+                "Merkle proof index {} out of bounds for layer of size {}",
+                layer_index, layer.len()
+            );
             let sibling_index = if layer_index % 2 == 0 {
                 layer_index + 1
             } else {
                 layer_index - 1
             };
 
+            // Guard: sibling_index may equal layer.len() in edge cases with odd-sized
+            // layers before padding propagates. In such cases, no sibling is added
+            // because the element is implicitly paired with itself (duplicated).
             if sibling_index < layer.len() {
                 let position = if layer_index % 2 == 0 {
                     Position::Right

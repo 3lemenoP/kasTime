@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import type { BatchMode, KtcsProof } from '../types/proof';
+import type { BatchMode } from '../types/proof';
 import type { StampResponse } from '../types/api';
 import type { KaspaUtxo, KaspaBlockInfo } from '../api/kaspa';
 
@@ -32,6 +32,14 @@ export type DirectStampStep =
   | 'complete'
   | 'error';
 
+/** File metadata (serializable alternative to File object) */
+export interface FileMetadata {
+  name: string;
+  size: number;
+  type: string;
+  lastModified: number;
+}
+
 /** Stamp store state */
 export interface StampState {
   // ==========================================================================
@@ -46,8 +54,8 @@ export interface StampState {
   // Current step in the stamping flow (calendar mode)
   step: StampStep;
 
-  // File being stamped
-  file: File | null;
+  // File being stamped (metadata only, not the actual File object)
+  file: FileMetadata | null;
   fileName: string | null;
 
   // Hash of the file
@@ -100,7 +108,7 @@ export interface StampState {
   // Common Actions
   // ==========================================================================
   setMode: (mode: StampMode) => void;
-  setFile: (file: File) => void;
+  setFile: (file: File | null) => void;
   setHash: (hash: string) => void;
   setStep: (step: StampStep) => void;
   setConfirmedProof: (proof: string) => void;
@@ -187,22 +195,32 @@ export const useStampStore = create<StampState>()(
       error: null,
     }),
 
-  setFile: (file: File) =>
-    set({
-      file,
-      fileName: file.name,
-      step: 'hashing',
-      directStep: 'idle',
-      hash: null,
-      stampId: null,
-      stampResponse: null,
-      confirmedProof: null,
-      nonce: null,
-      commitment: null,
-      transactionId: null,
-      blockInfo: null,
-      error: null,
-    }),
+  setFile: (file: File | null) => {
+    if (file) {
+      set({
+        file: {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          lastModified: file.lastModified,
+        },
+        fileName: file.name,
+        step: 'hashing',
+        directStep: 'idle',
+        hash: null,
+        stampId: null,
+        stampResponse: null,
+        confirmedProof: null,
+        nonce: null,
+        commitment: null,
+        transactionId: null,
+        blockInfo: null,
+        error: null,
+      });
+    } else {
+      set({ file: null });
+    }
+  },
 
   setHash: (hash: string) =>
     set({
@@ -313,13 +331,29 @@ export const useStampStore = create<StampState>()(
     });
   },
 
-  setDirectStampState: (state) =>
-    set({
-      ...(state.nonce !== undefined && { nonce: state.nonce }),
-      ...(state.commitment !== undefined && { commitment: state.commitment }),
-      ...(state.transactionId !== undefined && { transactionId: state.transactionId }),
-      ...(state.blockInfo !== undefined && { blockInfo: state.blockInfo }),
-    }),
+  setDirectStampState: (state) => {
+    const current = get();
+    const updates: Partial<StampState> = {};
+
+    // Only include fields that are provided and different from current state
+    if (state.nonce !== undefined && state.nonce !== current.nonce) {
+      updates.nonce = state.nonce;
+    }
+    if (state.commitment !== undefined && state.commitment !== current.commitment) {
+      updates.commitment = state.commitment;
+    }
+    if (state.transactionId !== undefined && state.transactionId !== current.transactionId) {
+      updates.transactionId = state.transactionId;
+    }
+    if (state.blockInfo !== undefined && state.blockInfo !== current.blockInfo) {
+      updates.blockInfo = state.blockInfo;
+    }
+
+    // Only call set() if there are actual updates
+    if (Object.keys(updates).length > 0) {
+      set(updates);
+    }
+  },
 
   clearWallet: () =>
     set({
