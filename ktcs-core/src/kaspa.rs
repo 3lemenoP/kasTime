@@ -503,6 +503,255 @@ impl KaspaClient {
         Err(KtcsError::BlockNotFound(hex::encode(hash)))
     }
 
+    /// Get a block with full transaction data (including payloads)
+    ///
+    /// This is useful for verifying commitments in transaction payloads.
+    #[cfg(feature = "kaspa-client")]
+    pub async fn get_block_with_transactions(&self, hash: &[u8; 32]) -> Result<(BlockInfo, Vec<TransactionInfo>)> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct BlockHeader {
+            hash: String,
+            daa_score: u64,
+            blue_score: u64,
+            blue_work: String,
+            timestamp: u64,
+            #[serde(default)]
+            parents: Vec<Vec<String>>,
+        }
+
+        // Script public key can be a string or an object depending on RPC version
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum RpcScriptPublicKey {
+            String(String),
+            Object { script_public_key: String },
+        }
+
+        impl RpcScriptPublicKey {
+            fn as_hex(&self) -> &str {
+                match self {
+                    RpcScriptPublicKey::String(s) => s,
+                    RpcScriptPublicKey::Object { script_public_key } => script_public_key,
+                }
+            }
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RpcTransactionOutput {
+            #[serde(alias = "amount")]
+            value: u64,
+            script_public_key: RpcScriptPublicKey,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RpcOutpoint {
+            transaction_id: String,
+            index: u32,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RpcTransactionInput {
+            previous_outpoint: RpcOutpoint,
+            #[serde(default)]
+            signature_script: String,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RpcTransaction {
+            #[serde(default)]
+            payload: String,
+            #[serde(default)]
+            outputs: Vec<RpcTransactionOutput>,
+            #[serde(default)]
+            inputs: Vec<RpcTransactionInput>,
+            verbose_data: Option<RpcTxVerboseData>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RpcTxVerboseData {
+            transaction_id: String,
+            #[serde(default)]
+            block_hash: String,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct BlockData {
+            header: BlockHeader,
+            transactions: Option<Vec<RpcTransaction>>,
+            verbose_data: Option<VerboseData>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct VerboseData {
+            is_chain_block: bool,
+            transaction_ids: Vec<String>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct BlockResponse {
+            block: BlockData,
+        }
+
+        let hash_hex = hex::encode(hash);
+        let params = serde_json::json!({
+            "hash": hash_hex,
+            "includeTransactions": true
+        });
+
+        let response: BlockResponse = self.send_request("getBlock", params).await?;
+
+        let block = response.block;
+        let header = block.header;
+
+        // Parse block hash
+        let block_hash_bytes = hex::decode(&header.hash)
+            .map_err(|e| KtcsError::InvalidData(format!("Invalid block hash: {}", e)))?;
+        let mut block_hash = [0u8; 32];
+        if block_hash_bytes.len() == 32 {
+            block_hash.copy_from_slice(&block_hash_bytes);
+        }
+
+        // Parse blue work
+        let blue_work_bytes = hex::decode(&header.blue_work).unwrap_or_else(|_| vec![0u8; 32]);
+        let mut blue_work = [0u8; 32];
+        let start = 32usize.saturating_sub(blue_work_bytes.len());
+        blue_work[start..].copy_from_slice(&blue_work_bytes[..32.min(blue_work_bytes.len())]);
+
+        // Parse parent hashes
+        let parent_hashes: Vec<[u8; 32]> = header
+            .parents
+            .first()
+            .map(|level| {
+                level.iter().filter_map(|h| {
+                    let bytes = hex::decode(h).ok()?;
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        Some(arr)
+                    } else {
+                        None
+                    }
+                }).collect()
+            })
+            .unwrap_or_default();
+
+        // Parse transaction IDs
+        let transaction_ids: Vec<[u8; 32]> = block.verbose_data.as_ref()
+            .map(|v| {
+                v.transaction_ids.iter().filter_map(|t| {
+                    let bytes = hex::decode(t).ok()?;
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        Some(arr)
+                    } else {
+                        None
+                    }
+                }).collect()
+            })
+            .unwrap_or_default();
+
+        let block_info = BlockInfo {
+            hash: block_hash,
+            daa_score: header.daa_score,
+            blue_score: header.blue_score,
+            blue_work,
+            timestamp: header.timestamp,
+            parent_hashes,
+            transaction_ids,
+            is_chain_block: block.verbose_data.map(|v| v.is_chain_block).unwrap_or(false),
+        };
+
+        // Parse transactions
+        let transactions: Vec<TransactionInfo> = block.transactions
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|tx| {
+                let tx_hash = tx.verbose_data.as_ref()
+                    .and_then(|v| hex::decode(&v.transaction_id).ok())
+                    .and_then(|bytes| {
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            Some(arr)
+                        } else {
+                            None
+                        }
+                    })?;
+
+                let block_hash = tx.verbose_data.as_ref()
+                    .and_then(|v| hex::decode(&v.block_hash).ok())
+                    .and_then(|bytes| {
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            Some(arr)
+                        } else {
+                            None
+                        }
+                    });
+
+                let outputs: Vec<TransactionOutput> = tx.outputs.into_iter().map(|o| {
+                    let script_bytes = hex::decode(o.script_public_key.as_hex()).unwrap_or_default();
+                    TransactionOutput {
+                        amount: o.value,
+                        script_public_key: ScriptPublicKey {
+                            version: 0,
+                            script: script_bytes,
+                        },
+                    }
+                }).collect();
+
+                let inputs: Vec<TransactionInput> = tx.inputs.into_iter().map(|i| {
+                    let prev_hash = hex::decode(&i.previous_outpoint.transaction_id)
+                        .ok()
+                        .and_then(|v| {
+                            if v.len() == 32 {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(&v);
+                                Some(arr)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or([0u8; 32]);
+
+                    let sig_script = hex::decode(&i.signature_script).unwrap_or_default();
+
+                    TransactionInput {
+                        previous_outpoint_hash: prev_hash,
+                        previous_outpoint_index: i.previous_outpoint.index,
+                        signature_script: sig_script,
+                    }
+                }).collect();
+
+                Some(TransactionInfo {
+                    hash: tx_hash,
+                    block_hash,
+                    outputs,
+                    inputs,
+                    is_accepted: true,
+                })
+            })
+            .collect();
+
+        Ok((block_info, transactions))
+    }
+
+    #[cfg(not(feature = "kaspa-client"))]
+    pub async fn get_block_with_transactions(&self, hash: &[u8; 32]) -> Result<(BlockInfo, Vec<TransactionInfo>)> {
+        Err(KtcsError::BlockNotFound(hex::encode(hash)))
+    }
+
     /// Get the current DAG information
     ///
     /// Returns information about the current state of the BlockDAG including

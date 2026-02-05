@@ -49,24 +49,6 @@ function Layout() {
             >
               VERIFY
             </NavLink>
-            <NavLink
-              to="/network"
-              className={({ isActive }) =>
-                `px-4 py-2 text-sm font-medium tracking-wide transition-colors ${
-                  isActive
-                    ? 'text-[var(--accent-primary)]'
-                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                }`
-              }
-            >
-              NETWORK
-            </NavLink>
-
-            {/* Status indicator */}
-            <div className="ml-4 flex items-center gap-2 px-3 py-1.5 rounded bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
-              <span className="w-2 h-2 rounded-full bg-[var(--status-success)] animate-live-pulse" />
-              <span className="text-xs text-[var(--text-tertiary)]">10 BPS</span>
-            </div>
           </nav>
         </div>
       </header>
@@ -79,25 +61,8 @@ function Layout() {
       {/* Footer */}
       <footer className="border-t border-[var(--border-subtle)] bg-[var(--bg-secondary)] py-4">
         <div className="max-w-7xl mx-auto px-6 flex items-center justify-between text-xs text-[var(--text-tertiary)]">
-          <div>KTCS v0.1.0 - Kaspa Thermodynamic Clock Service</div>
-          <div className="flex items-center gap-4">
-            <a
-              href="https://kaspa.org"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-[var(--accent-primary)] transition-colors"
-            >
-              Kaspa Network
-            </a>
-            <a
-              href="https://github.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-[var(--accent-primary)] transition-colors"
-            >
-              GitHub
-            </a>
-          </div>
+          <div>KTCS v0.1.0</div>
+          <div>Powered by Kaspa</div>
         </div>
       </footer>
     </div>

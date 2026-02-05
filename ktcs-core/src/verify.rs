@@ -9,6 +9,9 @@ use crate::ops::apply_operations;
 use crate::types::{Attestation, KaspaAttestation, KtcsProof};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "kaspa-client")]
+use crate::kaspa::KaspaClient;
+
 /// Result of proof verification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
@@ -329,6 +332,127 @@ pub fn create_commitment_payload(commitment: &[u8; 32]) -> Vec<u8> {
     payload.extend_from_slice(KTCS_COMMITMENT_PREFIX);
     payload.extend_from_slice(commitment);
     payload
+}
+
+/// Result of verifying an attestation against the live blockchain
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainVerificationResult {
+    /// Whether the block was found and verified on chain
+    pub block_verified: bool,
+    /// Whether the transaction was found in the block
+    pub tx_verified: bool,
+    /// Whether the commitment was found in the transaction payload
+    pub commitment_verified: bool,
+    /// Current DAA score of the network
+    pub current_daa_score: u64,
+    /// Number of blocks since the attestation
+    pub blocks_since: u64,
+}
+
+/// Verify a Kaspa attestation against the live blockchain
+///
+/// This performs the following checks:
+/// 1. Fetches the block with full transactions by hash
+/// 2. Verifies the block's DAA score matches the attestation
+/// 3. Verifies the transaction is in the block
+/// 4. Verifies the commitment is in the transaction outputs
+/// 5. Returns current chain state for thermodynamic metrics
+///
+/// # Arguments
+///
+/// * `client` - Connected KaspaClient
+/// * `attestation` - The Kaspa attestation to verify
+/// * `computed_commitment` - The commitment computed from the proof operations
+///
+/// # Returns
+///
+/// ChainVerificationResult with verification status and chain state
+#[cfg(feature = "kaspa-client")]
+pub async fn verify_attestation_on_chain(
+    client: &KaspaClient,
+    attestation: &KaspaAttestation,
+    computed_commitment: &[u8; 32],
+) -> Result<ChainVerificationResult> {
+    // 1. Fetch block with full transactions
+    let (block, transactions) = client.get_block_with_transactions(&attestation.block_hash).await?;
+
+    // 2. Verify block metadata matches attestation
+    let block_verified = block.daa_score == attestation.daa_score;
+    if !block_verified {
+        tracing::warn!(
+            "DAA score mismatch: attestation has {}, block has {}",
+            attestation.daa_score,
+            block.daa_score
+        );
+    }
+
+    // 3. Verify transaction is in block
+    let tx_verified = block.transaction_ids.iter().any(|id| *id == attestation.tx_hash);
+    if !tx_verified {
+        tracing::warn!(
+            "Transaction {} not found in block {}",
+            hex::encode(attestation.tx_hash),
+            hex::encode(attestation.block_hash)
+        );
+    }
+
+    // 4. Verify commitment in transaction outputs
+    let commitment_verified = if tx_verified {
+        // Find our transaction in the block's transactions
+        let tx_info = transactions.iter().find(|tx| tx.hash == attestation.tx_hash);
+
+        match tx_info {
+            Some(tx) => {
+                let mut found = false;
+                for output in &tx.outputs {
+                    // Check if this output contains our commitment
+                    // KTCS commitments are stored as: "KTCS" prefix + 32-byte commitment
+                    let script = &output.script_public_key.script;
+                    if verify_commitment_in_tx(computed_commitment, script) {
+                        found = true;
+                        break;
+                    }
+                }
+
+                // Also scan for bare commitment in output scripts
+                if !found {
+                    for output in &tx.outputs {
+                        if output.script_public_key.script.len() >= 32 {
+                            for window in output.script_public_key.script.windows(32) {
+                                if window == computed_commitment {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if found {
+                            break;
+                        }
+                    }
+                }
+
+                found
+            }
+            None => {
+                tracing::warn!("Transaction data not found in block response");
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    // 5. Get current chain state for thermodynamic metrics
+    let dag_info = client.get_block_dag_info().await?;
+    let blocks_since = dag_info.current_daa_score.saturating_sub(attestation.daa_score);
+
+    Ok(ChainVerificationResult {
+        block_verified,
+        tx_verified,
+        commitment_verified,
+        current_daa_score: dag_info.current_daa_score,
+        blocks_since,
+    })
 }
 
 #[cfg(test)]

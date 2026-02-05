@@ -1,56 +1,35 @@
 import { useState } from 'react'
-import { CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { CheckCircle, XCircle, Loader2, FileCheck, Link2, Unlink2 } from 'lucide-react'
 import FileDropZone from '../components/ui/FileDropZone'
 import Button from '../components/ui/Button'
 import { verifyProof, parseProof, isWasmInitialized } from '../lib/wasm'
-import { createCalendarClient } from '../api/calendar'
-import type { VerificationResult, ProofInfo } from '../types/proof'
-import type { VerifyResponse } from '../types/api'
-
-const CALENDAR_URL = import.meta.env.VITE_CALENDAR_URL || 'http://localhost:3001'
-
-/** Convert API verification response to client-side VerificationResult format */
-function convertApiResponse(apiResult: VerifyResponse): VerificationResult {
-  return {
-    valid: apiResult.valid,
-    digest: apiResult.digest,
-    computedCommitment: apiResult.digest,
-    attestations: apiResult.attestations.map(att => ({
-      attestationType: att.type,
-      complete: att.type !== 'pending',
-      blockHash: att.block_hash,
-      daaScore: att.daa_score ? parseInt(att.daa_score, 10) : undefined,
-      blueScore: att.blue_score ? parseInt(att.blue_score, 10) : undefined,
-    })),
-    error: apiResult.error,
-  }
-}
+import { createKaspaClient, KASPA_PUBLIC_ENDPOINTS } from '../api/kaspa'
+import { verifyOnBlockchain, calculateSecurityMetrics, type BlockchainVerificationResult } from '../lib/blockchainVerify'
+import type { VerificationResult } from '../types/proof'
 
 function VerifyPage(): JSX.Element {
   const [proofFile, setProofFile] = useState<File | null>(null)
   const [proofBytes, setProofBytes] = useState<Uint8Array | null>(null)
   const [originalFile, setOriginalFile] = useState<File | null>(null)
   const [originalBytes, setOriginalBytes] = useState<Uint8Array | null>(null)
-  const [verificationMode, setVerificationMode] = useState<'full' | 'light'>('full')
   const [isVerifying, setIsVerifying] = useState(false)
   const [result, setResult] = useState<VerificationResult | null>(null)
-  const [_proofInfo, setProofInfo] = useState<ProofInfo | null>(null)
+  const [chainResult, setChainResult] = useState<BlockchainVerificationResult | null>(null)
+  const [isVerifyingChain, setIsVerifyingChain] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const handleProofDrop = async (file: File) => {
     setProofFile(file)
     setResult(null)
     setError(null)
-    setProofInfo(null)
     try {
       const buffer = await file.arrayBuffer()
       const bytes = new Uint8Array(buffer)
       setProofBytes(bytes)
 
-      // Try to parse the proof for preview
       if (isWasmInitialized()) {
-        const info = parseProof(bytes)
-        setProofInfo(info)
+        parseProof(bytes)
       }
     } catch (err) {
       console.error('Error reading proof file:', err)
@@ -73,21 +52,52 @@ function VerifyPage(): JSX.Element {
 
     setIsVerifying(true)
     setResult(null)
+    setChainResult(null)
     setError(null)
 
     try {
-      if (verificationMode === 'full') {
-        // Full verification: client-side WASM (trustless)
-        if (!isWasmInitialized()) {
-          throw new Error('WASM module not initialized')
+      if (!isWasmInitialized()) {
+        throw new Error('WASM module not initialized')
+      }
+      // Step 1: WASM cryptographic verification
+      const verificationResult = verifyProof(proofBytes, originalBytes || undefined)
+      setResult(verificationResult)
+
+      // Step 2: Blockchain verification (if cryptographic verification passed)
+      if (verificationResult.valid && verificationResult.attestations.length > 0) {
+        // Find Kaspa attestations
+        const kaspaAtt = verificationResult.attestations.find(
+          att => att.attestationType === 'kaspa' && att.complete && att.blockHash && att.txHash
+        )
+
+        if (kaspaAtt && kaspaAtt.blockHash && kaspaAtt.txHash) {
+          setIsVerifyingChain(true)
+          try {
+            const kaspaClient = createKaspaClient(KASPA_PUBLIC_ENDPOINTS.mainnet[0].url)
+            await kaspaClient.connect()
+
+            const blockchainResult = await verifyOnBlockchain(
+              kaspaClient,
+              kaspaAtt.blockHash,
+              kaspaAtt.txHash,
+              verificationResult.computedCommitment,
+              kaspaAtt.daaScore
+            )
+            setChainResult(blockchainResult)
+
+            kaspaClient.disconnect()
+          } catch (chainErr) {
+            console.warn('Blockchain verification failed:', chainErr)
+            setChainResult({
+              blockExists: false,
+              transactionInBlock: false,
+              commitmentVerified: false,
+              error: chainErr instanceof Error ? chainErr.message : 'Connection failed',
+            })
+          } finally {
+            setIsVerifyingChain(false)
+          }
         }
-        const verificationResult = verifyProof(proofBytes, originalBytes || undefined)
-        setResult(verificationResult)
-      } else {
-        // Light verification: server-side via API (faster but trusts server)
-        const client = createCalendarClient(CALENDAR_URL)
-        const apiResult = await client.verify(proofBytes)
-        setResult(convertApiResponse(apiResult))
       }
     } catch (err) {
       console.error('Verification error:', err)
@@ -97,180 +107,316 @@ function VerifyPage(): JSX.Element {
     }
   }
 
+  const handleReset = () => {
+    setProofFile(null)
+    setProofBytes(null)
+    setOriginalFile(null)
+    setOriginalBytes(null)
+    setResult(null)
+    setChainResult(null)
+    setError(null)
+  }
+
+  const truncateHash = (hash: string) => `${hash.slice(0, 16)}...${hash.slice(-8)}`
+
   return (
-    <div className="max-w-3xl mx-auto px-6 py-12">
-      {/* Header */}
-      <div className="text-center mb-12">
-        <h1 className="text-display-md font-display mb-4 tracking-wide">
-          <span className="text-[var(--text-primary)]">VERIFY </span>
-          <span className="text-[var(--accent-primary)]">PROOF</span>
+    <div className="min-h-[80vh] flex flex-col items-center justify-center px-6 py-16">
+      {/* Hero Title */}
+      <motion.div
+        className="text-center mb-12"
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+      >
+        <h1 className="text-display-xl font-display tracking-tight mb-3">
+          <span className="text-[var(--text-primary)]">VER</span>
+          <span className="text-[var(--accent-primary)]">IFY</span>
         </h1>
         <p className="text-body-lg text-[var(--text-secondary)]">
           Validate a timestamp proof independently
         </p>
-      </div>
+      </motion.div>
 
-      {/* Verification Form */}
-      <div className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg p-8">
-        {/* Proof File */}
-        <div className="mb-8">
-          <label className="text-label block mb-3">PROOF FILE (.kts)</label>
-          <FileDropZone
-            onFileDrop={handleProofDrop}
-            accept=".kts"
-            description="Drop .kts proof file"
-          />
-          {proofFile && (
-            <div className="mt-3 flex items-center gap-2 text-sm text-[var(--status-success)]">
-              <CheckCircle className="w-4 h-4" />
-              <span className="font-data">{proofFile.name}</span>
-            </div>
-          )}
-        </div>
+      {/* Main Content */}
+      <motion.div
+        className="w-full max-w-xl"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1 }}
+      >
+        <AnimatePresence mode="wait">
+          {/* Result Display */}
+          {result && (
+            <motion.div
+              key="result"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="mb-8"
+            >
+              {/* Result Banner */}
+              <div
+                className={`rounded-lg p-8 text-center ${
+                  result.valid
+                    ? 'bg-[var(--status-success)]/10 border border-[var(--status-success)]/30'
+                    : 'bg-[var(--status-error)]/10 border border-[var(--status-error)]/30'
+                }`}
+              >
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: 'spring', damping: 15, stiffness: 200 }}
+                >
+                  {result.valid ? (
+                    <CheckCircle className="w-16 h-16 mx-auto mb-4 text-[var(--status-success)]" />
+                  ) : (
+                    <XCircle className="w-16 h-16 mx-auto mb-4 text-[var(--status-error)]" />
+                  )}
+                </motion.div>
 
-        {/* Divider */}
-        <div className="flex items-center gap-4 my-8">
-          <div className="flex-1 h-px bg-[var(--border-subtle)]" />
-          <span className="text-xs text-[var(--text-tertiary)]">OR</span>
-          <div className="flex-1 h-px bg-[var(--border-subtle)]" />
-        </div>
+                <h2 className={`text-display-md font-display mb-2 ${
+                  result.valid ? 'text-[var(--status-success)]' : 'text-[var(--status-error)]'
+                }`}>
+                  {result.valid ? 'VALID' : 'INVALID'}
+                </h2>
 
-        {/* Original Document */}
-        <div className="mb-8">
-          <label className="text-label block mb-3">
-            ORIGINAL DOCUMENT <span className="text-[var(--text-tertiary)]">(optional, for hash verification)</span>
-          </label>
-          <FileDropZone
-            onFileDrop={handleOriginalDrop}
-            description="Drop original document"
-          />
-          {originalFile && (
-            <div className="mt-3 flex items-center gap-2 text-sm text-[var(--status-success)]">
-              <CheckCircle className="w-4 h-4" />
-              <span className="font-data">{originalFile.name}</span>
-            </div>
-          )}
-        </div>
+                {result.valid && result.digest && (
+                  <p className="text-sm text-[var(--text-secondary)] mb-4">
+                    Document hash verified
+                  </p>
+                )}
 
-        {/* Verify Button */}
-        <Button onClick={handleVerify} disabled={!proofFile || isVerifying} className="w-full">
-          {isVerifying ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              VERIFYING...
-            </>
-          ) : (
-            'VERIFY'
-          )}
-        </Button>
-
-        {/* Verification Result */}
-        {result && (
-          <div className={`mt-6 p-4 rounded-lg border ${
-            result.valid
-              ? 'bg-green-500/10 border-green-500/30'
-              : 'bg-red-500/10 border-red-500/30'
-          }`}>
-            <div className="flex items-center gap-3 mb-3">
-              {result.valid ? (
-                <>
-                  <CheckCircle className="w-6 h-6 text-green-500" />
-                  <span className="text-lg font-medium text-green-500">PROOF VALID</span>
-                </>
-              ) : (
-                <>
-                  <XCircle className="w-6 h-6 text-red-500" />
-                  <span className="text-lg font-medium text-red-500">PROOF INVALID</span>
-                </>
-              )}
-            </div>
-            {result.digest && (
-              <div className="mt-2">
-                <span className="text-label text-xs">DIGEST</span>
-                <p className="font-data text-sm text-[var(--text-secondary)] break-all">
-                  {result.digest}
-                </p>
+                {result.error && (
+                  <p className="text-sm text-[var(--status-error)]">{result.error}</p>
+                )}
               </div>
-            )}
-            {result.attestations && result.attestations.length > 0 && (
-              <div className="mt-3">
-                <span className="text-label text-xs">ATTESTATIONS</span>
-                <div className="mt-1 space-y-2">
-                  {result.attestations.map((att, idx) => (
-                    <div key={idx} className="text-sm text-[var(--text-secondary)]">
-                      <span className="text-[var(--accent-primary)]">{att.attestationType}</span>
-                      {att.complete && att.blockHash && (
-                        <span className="font-data text-xs ml-2 break-all">
-                          Block: {att.blockHash}
-                        </span>
+
+              {/* Details */}
+              {result.valid && (
+                <motion.div
+                  className="mt-6 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg p-6 space-y-4"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
+                >
+                  {result.digest && (
+                    <div>
+                      <div className="text-label mb-1">DOCUMENT DIGEST</div>
+                      <code className="font-data text-sm text-[var(--accent-primary)] break-all">
+                        {truncateHash(result.digest)}
+                      </code>
+                    </div>
+                  )}
+
+                  {result.attestations && result.attestations.length > 0 && (
+                    <div>
+                      <div className="text-label mb-2">ATTESTATIONS</div>
+                      <div className="space-y-2">
+                        {result.attestations.map((att, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-center gap-2 text-sm text-[var(--text-secondary)]"
+                          >
+                            <span className="px-2 py-0.5 rounded text-xs font-medium bg-[var(--accent-primary-muted)] text-[var(--accent-primary)]">
+                              {att.attestationType}
+                            </span>
+                            {att.complete && att.blockHash && (
+                              <code className="font-data text-xs text-[var(--text-tertiary)]">
+                                {truncateHash(att.blockHash)}
+                              </code>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Blockchain Verification Results */}
+                  <div className="pt-4 border-t border-[var(--border-subtle)]">
+                      <div className="text-label mb-2">BLOCKCHAIN VERIFICATION</div>
+                      {isVerifyingChain ? (
+                        <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Verifying on Kaspa blockchain...</span>
+                        </div>
+                      ) : chainResult ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2 text-sm">
+                            {chainResult.blockExists ? (
+                              <Link2 className="w-4 h-4 text-[var(--status-success)]" />
+                            ) : (
+                              <Unlink2 className="w-4 h-4 text-[var(--status-error)]" />
+                            )}
+                            <span className={chainResult.blockExists ? 'text-[var(--status-success)]' : 'text-[var(--status-error)]'}>
+                              Block {chainResult.blockExists ? 'exists' : 'not found'} on chain
+                            </span>
+                          </div>
+                          {chainResult.blockExists && (
+                            <>
+                              <div className="flex items-center gap-2 text-sm">
+                                {chainResult.transactionInBlock ? (
+                                  <CheckCircle className="w-4 h-4 text-[var(--status-success)]" />
+                                ) : (
+                                  <XCircle className="w-4 h-4 text-[var(--status-error)]" />
+                                )}
+                                <span className={chainResult.transactionInBlock ? 'text-[var(--status-success)]' : 'text-[var(--status-error)]'}>
+                                  Transaction {chainResult.transactionInBlock ? 'verified' : 'not found'} in block
+                                </span>
+                              </div>
+                              {chainResult.transactionInBlock && (
+                                <div className="flex items-center gap-2 text-sm">
+                                  {chainResult.commitmentVerified ? (
+                                    <CheckCircle className="w-4 h-4 text-[var(--status-success)]" />
+                                  ) : (
+                                    <XCircle className="w-4 h-4 text-[var(--status-error)]" />
+                                  )}
+                                  <span className={chainResult.commitmentVerified ? 'text-[var(--status-success)]' : 'text-[var(--status-error)]'}>
+                                    Commitment {chainResult.commitmentVerified ? 'verified' : 'not found'} in transaction
+                                  </span>
+                                </div>
+                              )}
+                            </>
+                          )}
+                          {chainResult.blocksSince !== undefined && (
+                            <div className="mt-3 pt-3 border-t border-[var(--border-subtle)]">
+                              <div className="text-xs text-[var(--text-tertiary)] mb-1">THERMODYNAMIC SECURITY</div>
+                              <div className="text-sm text-[var(--text-secondary)]">
+                                <span className="font-data">{chainResult.blocksSince.toLocaleString()}</span> blocks since attestation
+                              </div>
+                              {(() => {
+                                const metrics = calculateSecurityMetrics(chainResult.blocksSince)
+                                return metrics.btcEquivalentConfirmations >= 0.1 ? (
+                                  <div className="text-sm text-[var(--text-secondary)]">
+                                    ~<span className="font-data">{metrics.btcEquivalentConfirmations.toFixed(2)}</span> BTC confirmations equivalent
+                                  </div>
+                                ) : null
+                              })()}
+                            </div>
+                          )}
+                          {chainResult.error && (
+                            <div className="text-xs text-[var(--status-error)] mt-2">
+                              {chainResult.error}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="text-sm text-[var(--text-tertiary)]">
+                          No Kaspa attestation found for chain verification
+                        </div>
                       )}
                     </div>
-                  ))}
+                </motion.div>
+              )}
+
+              {/* Try Again Button */}
+              <div className="mt-6 text-center">
+                <Button variant="secondary" onClick={handleReset}>
+                  Verify Another
+                </Button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Verification Form */}
+          {!result && (
+            <motion.div
+              key="form"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="space-y-6"
+            >
+              {/* Proof File */}
+              <div>
+                <div className="text-label mb-3">PROOF FILE (.kts)</div>
+                {proofFile ? (
+                  <div className="flex items-center gap-3 p-4 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg">
+                    <FileCheck className="w-5 h-5 text-[var(--status-success)]" />
+                    <span className="font-data text-sm text-[var(--text-primary)] flex-1">
+                      {proofFile.name}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setProofFile(null)
+                        setProofBytes(null)
+                      }}
+                      className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <FileDropZone
+                    onFileDrop={handleProofDrop}
+                    accept=".kts"
+                    description="Drop .kts proof file"
+                  />
+                )}
+              </div>
+
+              {/* Original Document (optional) */}
+              <div>
+                <div className="text-label mb-3">
+                  ORIGINAL DOCUMENT{' '}
+                  <span className="text-[var(--text-tertiary)] font-normal">(optional)</span>
                 </div>
+                {originalFile ? (
+                  <div className="flex items-center gap-3 p-4 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg">
+                    <FileCheck className="w-5 h-5 text-[var(--status-success)]" />
+                    <span className="font-data text-sm text-[var(--text-primary)] flex-1">
+                      {originalFile.name}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setOriginalFile(null)
+                        setOriginalBytes(null)
+                      }}
+                      className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <FileDropZone
+                    onFileDrop={handleOriginalDrop}
+                    description="For hash verification"
+                  />
+                )}
               </div>
-            )}
-            {result.error && (
-              <p className="mt-2 text-sm text-red-400">{result.error}</p>
-            )}
-          </div>
-        )}
 
-        {/* Error Display */}
-        {error && (
-          <div className="mt-6 p-4 rounded-lg border bg-red-500/10 border-red-500/30">
-            <div className="flex items-center gap-3">
-              <XCircle className="w-5 h-5 text-red-500" />
-              <span className="text-red-400">{error}</span>
-            </div>
-          </div>
-        )}
-      </div>
+              {/* Verify Button */}
+              <Button
+                onClick={handleVerify}
+                disabled={!proofFile || isVerifying}
+                className="w-full"
+              >
+                {isVerifying ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    VERIFYING...
+                  </>
+                ) : (
+                  'VERIFY'
+                )}
+              </Button>
 
-      {/* Verification Modes */}
-      <div className="mt-6 bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] rounded-lg p-6">
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-[var(--status-info)]">ℹ</span>
-          <span className="text-label">VERIFICATION MODES</span>
-        </div>
+              {/* Error Display */}
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="p-4 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/30"
+                >
+                  <div className="flex items-center gap-2">
+                    <XCircle className="w-5 h-5 text-[var(--status-error)]" />
+                    <span className="text-[var(--status-error)]">{error}</span>
+                  </div>
+                </motion.div>
+              )}
 
-        <div className="space-y-3">
-          <label className="flex items-start gap-3 cursor-pointer group">
-            <input
-              type="radio"
-              name="mode"
-              checked={verificationMode === 'full'}
-              onChange={() => setVerificationMode('full')}
-              className="mt-1 accent-[var(--accent-primary)]"
-            />
-            <div>
-              <div className="text-sm font-medium text-[var(--text-primary)] group-hover:text-[var(--accent-primary)] transition-colors">
-                FULL (Kaspa node)
-              </div>
-              <div className="text-xs text-[var(--text-tertiary)]">
-                Trustless, queries blockchain directly
-              </div>
-            </div>
-          </label>
-
-          <label className="flex items-start gap-3 cursor-pointer group">
-            <input
-              type="radio"
-              name="mode"
-              checked={verificationMode === 'light'}
-              onChange={() => setVerificationMode('light')}
-              className="mt-1 accent-[var(--accent-primary)]"
-            />
-            <div>
-              <div className="text-sm font-medium text-[var(--text-primary)] group-hover:text-[var(--accent-primary)] transition-colors">
-                LIGHT (API)
-              </div>
-              <div className="text-xs text-[var(--text-tertiary)]">
-                Fast, trusts verification service
-              </div>
-            </div>
-          </label>
-        </div>
-      </div>
+              </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
     </div>
   )
 }

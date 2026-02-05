@@ -65,7 +65,9 @@ pub use types::{
     Attestation, BatchMode, BitcoinAttestation, HashAlgorithm, KaspaAttestation, KtcsProof,
     Operation, PendingAttestation, KTCS_MAGIC, PROOF_VERSION,
 };
-pub use verify::{verify_proof, AttestationInfo, ThermodynamicMetrics, VerificationResult};
+pub use verify::{verify_proof, AttestationInfo, ChainVerificationResult, ThermodynamicMetrics, VerificationResult};
+#[cfg(feature = "kaspa-client")]
+pub use verify::verify_attestation_on_chain;
 pub use wallet::KaspaWallet;
 // Sighash functions are pure computation - available for both kaspa-client and wasm
 pub use wallet::{

@@ -323,6 +323,52 @@ export class KaspaClient {
   }
 
   /**
+   * Get transaction by ID
+   */
+  async getTransaction(txId: string): Promise<{
+    transactionId: string;
+    blockHash?: string;
+    payload?: string;
+    outputs: Array<{
+      value: bigint;
+      scriptPublicKey: string;
+    }>;
+  }> {
+    interface RpcTransaction {
+      version: number;
+      inputs: Array<{
+        previousOutpoint: { transactionId: string; index: number };
+        signatureScript: string;
+      }>;
+      outputs: Array<{
+        value: string;
+        scriptPublicKey: { version: number; scriptPublicKey: string };
+      }>;
+      payload?: string;
+    }
+
+    interface RpcResult {
+      transaction: RpcTransaction;
+      blockHash?: string;
+    }
+
+    const result = await this.sendRequest<RpcResult>(
+      'getTransaction',
+      { transactionId: txId }
+    );
+
+    return {
+      transactionId: txId,
+      blockHash: result.blockHash,
+      payload: result.transaction.payload,
+      outputs: result.transaction.outputs.map(o => ({
+        value: BigInt(o.value),
+        scriptPublicKey: o.scriptPublicKey.scriptPublicKey,
+      })),
+    };
+  }
+
+  /**
    * Get block by hash
    */
   async getBlockByHash(hash: string): Promise<KaspaBlockInfo> {
@@ -427,6 +473,83 @@ export class KaspaClient {
       timestamp: BigInt(block.header.timestamp),
       parentHashes,
       transactionIds,
+    };
+  }
+
+  /**
+   * Get block with full transaction data (including outputs)
+   * Use this for verifying commitments in transaction outputs
+   */
+  async getBlockWithFullTransactions(hash: string): Promise<{
+    hash: string;
+    daaScore: bigint;
+    blueScore: bigint;
+    timestamp: bigint;
+    transactionIds: string[];
+    transactions: Array<{
+      transactionId: string;
+      outputs: Array<{
+        value: bigint;
+        scriptPublicKey: string;
+      }>;
+    }>;
+  }> {
+    interface RpcOutput {
+      value: string;
+      scriptPublicKey: string | { scriptPublicKey: string };
+    }
+
+    interface RpcTransaction {
+      outputs: RpcOutput[];
+      verboseData?: {
+        transactionId: string;
+      };
+    }
+
+    interface RpcBlock {
+      header: {
+        hash: string;
+        daaScore: string;
+        blueScore: string;
+        timestamp: string;
+      };
+      transactions?: RpcTransaction[];
+      verboseData?: {
+        transactionIds?: string[];
+      };
+    }
+
+    const result = await this.sendRequest<{ block: RpcBlock }>(
+      'getBlock',
+      { hash, includeTransactions: true }
+    );
+
+    const block = result.block;
+    const transactionIds = block.verboseData?.transactionIds || [];
+
+    // Parse transactions
+    const transactions = (block.transactions || []).map(tx => {
+      const txId = tx.verboseData?.transactionId || '';
+      const outputs = tx.outputs.map(o => {
+        // scriptPublicKey can be string or object
+        const spk = typeof o.scriptPublicKey === 'string'
+          ? o.scriptPublicKey
+          : o.scriptPublicKey.scriptPublicKey;
+        return {
+          value: BigInt(o.value),
+          scriptPublicKey: spk,
+        };
+      });
+      return { transactionId: txId, outputs };
+    });
+
+    return {
+      hash: block.header.hash,
+      daaScore: BigInt(block.header.daaScore),
+      blueScore: BigInt(block.header.blueScore),
+      timestamp: BigInt(block.header.timestamp),
+      transactionIds,
+      transactions,
     };
   }
 

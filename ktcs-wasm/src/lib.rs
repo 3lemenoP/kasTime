@@ -28,6 +28,7 @@ pub fn init() {
 
 /// Result type returned to JavaScript
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WasmVerificationResult {
     pub valid: bool,
     pub digest: String,
@@ -37,6 +38,7 @@ pub struct WasmVerificationResult {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WasmAttestationInfo {
     pub attestation_type: String,
     pub complete: bool,
@@ -50,6 +52,7 @@ pub struct WasmAttestationInfo {
 
 /// Proof info returned when parsing
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WasmProofInfo {
     pub version: u8,
     pub hash_algorithm: String,

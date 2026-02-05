@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use ktcs_core::{
-    complete_stamp, deserialize_proof, generate_private_key, merkle::sha256, prepare_direct_stamp,
-    serialize_proof, sign_transaction, verify_proof, Attestation, BatchMode, DirectBlockInfo,
-    DirectStampConfig, KaspaClient, KaspaClientConfig, KaspaWallet, KtcsProof, PendingAttestation,
-    ThermodynamicMetrics,
+    complete_stamp, deserialize_proof, generate_private_key, merkle::sha256,
+    prepare_direct_stamp, serialize_proof, sign_transaction, verify_proof, Attestation, BatchMode,
+    DirectBlockInfo, DirectStampConfig, KaspaClient, KaspaClientConfig, KaspaWallet, KtcsProof,
+    PendingAttestation, ThermodynamicMetrics,
 };
 
 #[derive(Parser)]
@@ -82,6 +82,14 @@ enum Commands {
         /// Original data file (optional, for full verification)
         #[arg(short, long)]
         data: Option<PathBuf>,
+
+        /// Verify attestation exists on blockchain (requires network)
+        #[arg(long)]
+        chain: bool,
+
+        /// Kaspa RPC URL for chain verification
+        #[arg(long, default_value = "wss://kaspa.aspectron.com/wrpc/json/mainnet")]
+        rpc_url: String,
     },
 
     /// Display information about a proof
@@ -206,8 +214,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             cmd_stamp(file, calendar, mode, output, direct, wallet_file, wallet_stdin, rpc_url, network).await?;
         }
-        Commands::Verify { proof, data } => {
-            cmd_verify(proof, data)?;
+        Commands::Verify { proof, data, chain, rpc_url } => {
+            cmd_verify(proof, data, chain, rpc_url).await?;
         }
         Commands::Info { proof, json } => {
             cmd_info(proof, json)?;
@@ -590,7 +598,12 @@ fn parse_batch_mode(mode: &str) -> Result<BatchMode, Box<dyn std::error::Error>>
     }
 }
 
-fn cmd_verify(proof_path: PathBuf, data_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+async fn cmd_verify(
+    proof_path: PathBuf,
+    data_path: Option<PathBuf>,
+    chain: bool,
+    rpc_url: String,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", "KTCS Verification".bold().cyan());
     println!();
 
@@ -610,11 +623,11 @@ fn cmd_verify(proof_path: PathBuf, data_path: Option<PathBuf>) -> Result<(), Box
 
     println!();
 
-    // Verify
+    // Verify locally (cryptographic verification)
     let result = verify_proof(&proof, original_data.as_deref())?;
 
     if result.valid {
-        println!("{}", "✓ VALID".green().bold());
+        println!("{}", "✓ VALID (Cryptographic)".green().bold());
     } else {
         println!("{}", "✗ INVALID".red().bold());
     }
@@ -665,6 +678,96 @@ fn cmd_verify(proof_path: PathBuf, data_path: Option<PathBuf>) -> Result<(), Box
             }
             ktcs_core::verify::AttestationDetails::Bitcoin { block_height } => {
                 println!("     {} {}", "Block Height:".dimmed(), block_height);
+            }
+        }
+    }
+
+    // Blockchain verification (optional)
+    if chain {
+        println!();
+        println!("{}", "Blockchain Verification:".bold().cyan());
+        println!("  {} {}", "RPC:".dimmed(), rpc_url);
+        println!();
+
+        // Connect to Kaspa node
+        println!("{} Connecting to Kaspa node...", "→".blue());
+        let client_config = KaspaClientConfig {
+            rpc_url: rpc_url.clone(),
+            network: Some("mainnet".to_string()),
+            ..Default::default()
+        };
+        let client = KaspaClient::new(client_config);
+
+        match client.connect().await {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("{} Failed to connect: {}", "Error:".red(), e);
+                eprintln!();
+                eprintln!(
+                    "{}",
+                    "Make sure the RPC endpoint is accessible.".yellow()
+                );
+                return Err(e.into());
+            }
+        }
+
+        let dag_info = client.get_block_dag_info().await?;
+        println!(
+            "{} Connected to {} (DAA: {})",
+            "✓".green(),
+            dag_info.network,
+            dag_info.current_daa_score
+        );
+        println!();
+
+        // Compute the commitment from the proof
+        let computed_commitment = ktcs_core::apply_operations(&proof.digest, &proof.operations)?;
+        let commitment_bytes: [u8; 32] = computed_commitment
+            .as_slice()
+            .try_into()
+            .map_err(|_| "Commitment must be 32 bytes")?;
+
+        // Verify each Kaspa attestation on chain
+        for att in proof.kaspa_attestations() {
+            println!("{} Verifying attestation on chain...", "→".blue());
+
+            match ktcs_core::verify::verify_attestation_on_chain(&client, att, &commitment_bytes).await {
+                Ok(chain_result) => {
+                    if chain_result.block_verified {
+                        println!("{} Block verified on chain", "✓".green());
+                    } else {
+                        println!("{} Block NOT found on chain", "✗".red());
+                    }
+
+                    if chain_result.tx_verified {
+                        println!("{} Transaction verified in block", "✓".green());
+                    } else {
+                        println!("{} Transaction NOT found in block", "✗".red());
+                    }
+
+                    if chain_result.commitment_verified {
+                        println!("{} Commitment verified in transaction", "✓".green());
+                    } else {
+                        println!("{} Commitment NOT found in transaction", "✗".red());
+                    }
+
+                    println!();
+                    println!("  {} {}", "Current DAA:".dimmed(), chain_result.current_daa_score);
+                    println!("  {} {}", "Blocks since:".dimmed(), chain_result.blocks_since);
+
+                    // Calculate rough BTC equivalent
+                    let btc_equiv = chain_result.blocks_since as f64 / 60000.0;
+                    if btc_equiv >= 0.1 {
+                        println!(
+                            "  {} {:.2} BTC confirmations (equivalent)",
+                            "Security:".dimmed(),
+                            btc_equiv
+                        );
+                    }
+                }
+                Err(e) => {
+                    println!("{} Chain verification failed: {}", "✗".red(), e);
+                }
             }
         }
     }
