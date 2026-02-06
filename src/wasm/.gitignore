@@ -1,0 +1,2 @@
+# Ignore everything except the wasm-pack output files
+# These are needed for the frontend build

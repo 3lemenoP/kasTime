@@ -1,0 +1,20 @@
+{
+  "name": "ktcs-wasm",
+  "type": "module",
+  "collaborators": [
+    "KTCS Contributors"
+  ],
+  "description": "WebAssembly bindings for KTCS - enables browser-based proof verification",
+  "version": "0.1.0",
+  "license": "MIT",
+  "files": [
+    "ktcs_wasm_bg.wasm",
+    "ktcs_wasm.js",
+    "ktcs_wasm.d.ts"
+  ],
+  "main": "ktcs_wasm.js",
+  "types": "ktcs_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
