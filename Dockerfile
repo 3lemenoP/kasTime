@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy workspace manifests first for dependency caching
-COPY Cargo.toml Cargo.lock ./
+# Note: Cargo.lock is in .gitignore; if missing, cargo generates it during build
+COPY Cargo.toml Cargo.lock* ./
 COPY ktcs-core/Cargo.toml ktcs-core/Cargo.toml
 COPY ktcs-cli/Cargo.toml ktcs-cli/Cargo.toml
 COPY ktcs-calendar/Cargo.toml ktcs-calendar/Cargo.toml
