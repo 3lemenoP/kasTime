@@ -1,0 +1,36 @@
+[Unit]
+Description=KTCS Calendar Server - Kaspa Thermodynamic Clock Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ktcs
+Group=ktcs
+WorkingDirectory=/opt/ktcs/calendar
+
+ExecStart=/opt/ktcs/calendar/ktcs-calendar
+Restart=always
+RestartSec=5
+
+# Environment
+EnvironmentFile=/opt/ktcs/calendar/.env
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/ktcs/calendar/data
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=200%
+
+# Logging (stdout/stderr go to journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ktcs-calendar
+
+[Install]
+WantedBy=multi-user.target

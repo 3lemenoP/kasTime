@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Rust: build and test
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Rust Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build
+        run: cargo build --release -p ktcs-core -p ktcs-calendar -p ktcs-cli
+
+      - name: Test
+        run: cargo test --workspace --exclude ktcs-wasm
+
+  # ---------------------------------------------------------------------------
+  # Frontend: build and lint
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc -b
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_CALENDAR_URL: /api
+
+  # ---------------------------------------------------------------------------
+  # Docker: build images (on master only)
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [rust, frontend]
+    if: github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build calendar image
+        run: docker build -t ktcs-calendar:${{ github.sha }} .
+
+      - name: Build frontend image
+        run: docker build -f Dockerfile.frontend -t ktcs-frontend:${{ github.sha }} .

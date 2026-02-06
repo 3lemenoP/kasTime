@@ -1,0 +1,28 @@
+# Dependencies & build artifacts
+target/
+node_modules/
+dist/
+site/
+
+# Environment files with secrets
+.env
+.env.production
+.env.local
+.env.*.local
+ktcs-calendar/.env
+
+# Key files
+*.key
+*.pem
+
+# Git & IDE
+.git/
+.github/
+.vscode/
+.idea/
+
+# Docs & misc
+docs/
+*.md
+mkdocs.yml
+nul
