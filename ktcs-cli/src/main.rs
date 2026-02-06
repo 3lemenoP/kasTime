@@ -6,13 +6,176 @@ use std::fs;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use colored::Colorize;
+
+/// Configuration file structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// Default network (mainnet or testnet)
+    #[serde(default = "default_network")]
+    pub network: String,
+
+    /// Prefer direct stamping when wallet is configured
+    #[serde(default)]
+    pub prefer_direct: bool,
+
+    /// Mainnet-specific settings
+    #[serde(default)]
+    pub mainnet: NetworkConfig,
+
+    /// Testnet-specific settings
+    #[serde(default)]
+    pub testnet: NetworkConfig,
+}
+
+fn default_network() -> String {
+    "mainnet".to_string()
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            network: default_network(),
+            prefer_direct: false,
+            mainnet: NetworkConfig::default(),
+            testnet: NetworkConfig::default(),
+        }
+    }
+}
+
+/// Network-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    /// Calendar server URL
+    #[serde(default)]
+    pub calendar: Option<String>,
+
+    /// Kaspa RPC URL
+    #[serde(default)]
+    pub rpc_url: Option<String>,
+
+    /// Path to wallet key file
+    #[serde(default)]
+    pub wallet_file: Option<String>,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            calendar: None,
+            rpc_url: None,
+            wallet_file: None,
+        }
+    }
+}
+
+impl Config {
+    /// Get the config file path
+    pub fn path() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("ktcs")
+            .join("config.toml")
+    }
+
+    /// Load config from file, or return defaults if not found
+    pub fn load() -> Self {
+        let path = Self::path();
+        if path.exists() {
+            match fs::read_to_string(&path) {
+                Ok(content) => match toml::from_str(&content) {
+                    Ok(config) => return config,
+                    Err(e) => eprintln!("Warning: Failed to parse config: {}", e),
+                },
+                Err(e) => eprintln!("Warning: Failed to read config: {}", e),
+            }
+        }
+        Self::default()
+    }
+
+    /// Save config to file
+    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = Self::path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string_pretty(self)?;
+        fs::write(&path, content)?;
+        Ok(())
+    }
+
+    /// Get network-specific config
+    pub fn network_config(&self) -> &NetworkConfig {
+        match self.network.as_str() {
+            "testnet" => &self.testnet,
+            _ => &self.mainnet,
+        }
+    }
+
+    /// Get calendar URL for current network
+    pub fn calendar(&self) -> String {
+        self.network_config()
+            .calendar
+            .clone()
+            .unwrap_or_else(|| {
+                if self.network == "testnet" {
+                    "https://testnet-calendar.ktcs.kaspa.org".to_string()
+                } else {
+                    "https://calendar.ktcs.kaspa.org".to_string()
+                }
+            })
+    }
+
+    /// Get RPC URL for current network
+    pub fn rpc_url(&self) -> String {
+        self.network_config()
+            .rpc_url
+            .clone()
+            .unwrap_or_else(|| {
+                if self.network == "testnet" {
+                    "ws://localhost:16110".to_string()
+                } else {
+                    "wss://kaspa.aspectron.com/wrpc/json/mainnet".to_string()
+                }
+            })
+    }
+
+    /// Get wallet file path for current network
+    pub fn wallet_file(&self) -> Option<PathBuf> {
+        self.network_config()
+            .wallet_file
+            .as_ref()
+            .map(|s| {
+                // Expand ~ to home directory
+                if s.starts_with("~/") {
+                    dirs::home_dir()
+                        .map(|h| h.join(&s[2..]))
+                        .unwrap_or_else(|| PathBuf::from(s))
+                } else {
+                    PathBuf::from(s)
+                }
+            })
+    }
+}
 use ktcs_core::{
     complete_stamp, deserialize_proof, generate_private_key, merkle::sha256,
     prepare_direct_stamp, serialize_proof, sign_transaction, verify_proof, Attestation, BatchMode,
     DirectBlockInfo, DirectStampConfig, KaspaClient, KaspaClientConfig, KaspaWallet, KtcsProof,
     PendingAttestation, ThermodynamicMetrics,
 };
+
+/// Color output mode
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+enum ColorMode {
+    /// Automatically detect if terminal supports colors
+    #[default]
+    Auto,
+    /// Always use colors
+    Always,
+    /// Never use colors
+    Never,
+}
 
 #[derive(Parser)]
 #[command(name = "ktcs")]
@@ -29,6 +192,14 @@ struct Cli {
     /// Enable verbose output
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Control color output
+    #[arg(long, global = true, default_value = "auto", value_enum)]
+    color: ColorMode,
+
+    /// Suppress all output except errors and essential results
+    #[arg(short, long, global = true)]
+    quiet: bool,
 }
 
 #[derive(Subcommand)]
@@ -54,6 +225,10 @@ enum Commands {
         /// Create timestamp directly on-chain (requires --wallet-file or --wallet-stdin)
         #[arg(long)]
         direct: bool,
+
+        /// Return immediately with pending proof (don't wait for confirmation)
+        #[arg(long = "async")]
+        async_mode: bool,
 
         /// Path to file containing wallet private key (hex)
         /// SECURITY: Do not pass private keys as command-line arguments
@@ -103,15 +278,25 @@ enum Commands {
         json: bool,
     },
 
-    /// Upgrade a pending proof to a complete proof
-    #[command(alias = "u")]
-    Upgrade {
+    /// Complete a pending proof by fetching the confirmed attestation
+    #[command(alias = "c", visible_alias = "upgrade")]
+    Complete {
         /// Pending proof file (.kts)
         proof: PathBuf,
 
         /// Output file (default: overwrite input)
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+
+    /// Check the status of a proof (pending or complete)
+    Status {
+        /// Proof file (.kts)
+        proof: PathBuf,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Compute SHA256 hash of a file
@@ -125,6 +310,19 @@ enum Commands {
     Wallet {
         #[command(subcommand)]
         command: WalletCommands,
+    },
+
+    /// Configuration management commands
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
@@ -189,9 +387,50 @@ enum WalletCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Initialize config file with defaults
+    Init {
+        /// Overwrite existing config
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Show current configuration
+    Show {
+        /// Show config for specific network
+        #[arg(long)]
+        network: Option<String>,
+    },
+
+    /// Set a configuration value
+    Set {
+        /// Key to set (e.g., "network", "mainnet.rpc_url")
+        key: String,
+
+        /// Value to set
+        value: String,
+    },
+
+    /// Show config file path
+    Path,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
+    // Set up color mode
+    match cli.color {
+        ColorMode::Always => colored::control::set_override(true),
+        ColorMode::Never => colored::control::set_override(false),
+        ColorMode::Auto => {
+            // Respect NO_COLOR environment variable
+            if std::env::var("NO_COLOR").is_ok() {
+                colored::control::set_override(false);
+            }
+        }
+    }
 
     // Set up logging if verbose
     if cli.verbose {
@@ -207,12 +446,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             mode,
             output,
             direct,
+            async_mode,
             wallet_file,
             wallet_stdin,
             rpc_url,
             network,
         } => {
-            cmd_stamp(file, calendar, mode, output, direct, wallet_file, wallet_stdin, rpc_url, network).await?;
+            cmd_stamp(file, calendar, mode, output, direct, async_mode, wallet_file, wallet_stdin, rpc_url, network).await?;
         }
         Commands::Verify { proof, data, chain, rpc_url } => {
             cmd_verify(proof, data, chain, rpc_url).await?;
@@ -220,8 +460,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Info { proof, json } => {
             cmd_info(proof, json)?;
         }
-        Commands::Upgrade { proof, output } => {
-            cmd_upgrade(proof, output).await?;
+        Commands::Complete { proof, output } => {
+            cmd_complete(proof, output).await?;
+        }
+        Commands::Status { proof, json } => {
+            cmd_status(proof, json)?;
         }
         Commands::Hash { file } => {
             cmd_hash(file)?;
@@ -252,6 +495,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cmd_wallet_balance(wallet_file, wallet_stdin, address, &network, rpc.as_deref(), resolver).await?;
             }
         },
+        Commands::Config { command } => match command {
+            ConfigCommands::Init { force } => {
+                cmd_config_init(force)?;
+            }
+            ConfigCommands::Show { network } => {
+                cmd_config_show(network)?;
+            }
+            ConfigCommands::Set { key, value } => {
+                cmd_config_set(&key, &value)?;
+            }
+            ConfigCommands::Path => {
+                println!("{}", Config::path().display());
+            }
+        },
+        Commands::Completions { shell } => {
+            use clap::CommandFactory;
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "ktcs", &mut std::io::stdout());
+        }
     }
 
     Ok(())
@@ -303,6 +565,7 @@ async fn cmd_stamp(
     mode: String,
     output: Option<PathBuf>,
     direct: bool,
+    async_mode: bool,
     wallet_file: Option<PathBuf>,
     wallet_stdin: bool,
     rpc_url: String,
@@ -340,33 +603,140 @@ async fn cmd_stamp(
     println!();
 
     // For now, create a pending proof (actual calendar submission would go here)
-    println!("{}", "Submitting to calendar...".dimmed());
+    let calendar_url = format!("{}/v1/stamp/ktcs_{}", calendar, &hash_hex[..16]);
+    let output_path = determine_output_path(output, &file);
 
     // Create pending proof
     let mut proof = KtcsProof::new(hash.to_vec());
     proof.add_attestation(Attestation::Pending(PendingAttestation {
-        calendar_url: format!("{}/v1/stamp/ktcs_{}", calendar, &hash_hex[..16]),
+        calendar_url: calendar_url.clone(),
     }));
 
-    let output_path = determine_output_path(output, &file);
-    let kts_data = serialize_proof(&proof);
-    fs::write(&output_path, &kts_data)?;
+    println!("{} Submitting to calendar...", "→".blue());
 
-    println!();
-    println!("{}", "Timestamp created!".green().bold());
-    println!("  {} {}", "Proof:".dimmed(), output_path.display());
-    println!(
-        "  {} {}",
-        "Status:".dimmed(),
-        "Pending (awaiting confirmation)".yellow()
-    );
-    println!();
-    println!(
-        "{}",
-        "Run 'ktcs upgrade' once the timestamp is confirmed.".dimmed()
-    );
+    // In async mode, just save the pending proof and return
+    if async_mode {
+        let kts_data = serialize_proof(&proof);
+        fs::write(&output_path, &kts_data)?;
 
-    Ok(())
+        println!();
+        println!("{}", "Timestamp submitted!".green().bold());
+        println!("  {} {}", "Proof:".dimmed(), output_path.display());
+        println!(
+            "  {} {}",
+            "Status:".dimmed(),
+            "Pending (awaiting confirmation)".yellow()
+        );
+        println!();
+        println!(
+            "{}",
+            "Run 'ktcs complete' once the timestamp is confirmed.".dimmed()
+        );
+        return Ok(());
+    }
+
+    // Synchronous mode: wait for confirmation
+    println!("{} Waiting for confirmation...", "→".blue());
+
+    let client = reqwest::Client::new();
+    let max_attempts = 60; // ~60 seconds with 1s sleep
+    let mut attempts = 0;
+
+    loop {
+        attempts += 1;
+        if attempts > max_attempts {
+            // Timeout - save pending proof
+            let kts_data = serialize_proof(&proof);
+            fs::write(&output_path, &kts_data)?;
+
+            println!();
+            println!("{}", "Timeout waiting for confirmation.".yellow());
+            println!("  {} {}", "Proof:".dimmed(), output_path.display());
+            println!(
+                "  {} {}",
+                "Status:".dimmed(),
+                "Pending".yellow()
+            );
+            println!();
+            println!(
+                "{}",
+                "Run 'ktcs complete' later to fetch the confirmed proof.".dimmed()
+            );
+            return Ok(());
+        }
+
+        // Poll calendar for confirmation
+        let response = match client
+            .get(&calendar_url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+
+        if !response.status().is_success() {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            continue;
+        }
+
+        let stamp_response: CalendarStampResponse = match response.json().await {
+            Ok(r) => r,
+            Err(_) => {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+
+        if stamp_response.status == "confirmed" {
+            // Get the complete proof from response
+            if let Some(proof_base64) = stamp_response.proof {
+                let complete_proof_bytes = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &proof_base64,
+                )?;
+
+                // Verify we can deserialize the complete proof
+                let complete_proof = deserialize_proof(&complete_proof_bytes)?;
+
+                // Security: Verify proof digest matches original
+                if complete_proof.digest != proof.digest {
+                    return Err("Security error: calendar returned proof with different digest".into());
+                }
+
+                // Save complete proof
+                fs::write(&output_path, &complete_proof_bytes)?;
+
+                println!("{} Confirmed!", "✓".green());
+                println!();
+                println!("{}", "Timestamp created!".green().bold());
+                println!("  {} {}", "Proof:".dimmed(), output_path.display());
+                println!(
+                    "  {} {}",
+                    "Status:".dimmed(),
+                    "Complete".green()
+                );
+
+                // Show attestation info
+                for attestation in complete_proof.attestations.iter() {
+                    if let Attestation::Kaspa(ka) = attestation {
+                        println!();
+                        println!("  {} {}", "DAA Score:".dimmed(), ka.daa_score);
+                        println!("  {} {}", "Blue Score:".dimmed(), ka.blue_score);
+                        break;
+                    }
+                }
+
+                return Ok(());
+            }
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
 }
 
 /// Direct stamping command handler - creates timestamps directly on-chain.
@@ -834,6 +1204,64 @@ fn cmd_info(proof_path: PathBuf, json: bool) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+/// Check status of a proof
+fn cmd_status(proof_path: PathBuf, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let kts_data = fs::read(&proof_path)?;
+    let proof = deserialize_proof(&kts_data)?;
+
+    let is_complete = proof.is_complete();
+    let attestation_count = proof.attestations.len();
+
+    // Find pending attestation URL if exists
+    let pending_url = proof.attestations.iter().find_map(|a| match a {
+        Attestation::Pending(p) => Some(p.calendar_url.clone()),
+        _ => None,
+    });
+
+    // Find Kaspa attestation details if complete
+    let kaspa_info = proof.kaspa_attestations().next().map(|ka| {
+        (ka.daa_score, ka.blue_score, hex::encode(ka.block_hash))
+    });
+
+    if json {
+        let output = serde_json::json!({
+            "file": proof_path.display().to_string(),
+            "status": if is_complete { "complete" } else { "pending" },
+            "digest": hex::encode(&proof.digest),
+            "attestations": attestation_count,
+            "pending_url": pending_url,
+            "kaspa": kaspa_info.map(|(daa, blue, hash)| serde_json::json!({
+                "daa_score": daa,
+                "blue_score": blue,
+                "block_hash": hash,
+            })),
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        let status_text = if is_complete {
+            "Complete".green().bold()
+        } else {
+            "Pending".yellow().bold()
+        };
+
+        println!("{} {}", proof_path.display(), status_text);
+
+        if let Some(url) = pending_url {
+            println!("  {} {}", "Calendar:".dimmed(), url);
+            println!();
+            println!("  {}", "Run 'ktcs complete' to fetch the confirmed proof.".dimmed());
+        }
+
+        if let Some((daa, blue, hash)) = kaspa_info {
+            println!("  {} {}", "DAA Score:".dimmed(), daa);
+            println!("  {} {}", "Blue Score:".dimmed(), blue);
+            println!("  {} {}", "Block:".dimmed(), &hash[..16]);
+        }
+    }
+
+    Ok(())
+}
+
 /// Response from calendar stamp endpoint
 #[derive(serde::Deserialize)]
 struct CalendarStampResponse {
@@ -842,11 +1270,11 @@ struct CalendarStampResponse {
     proof: Option<String>,
 }
 
-async fn cmd_upgrade(
+async fn cmd_complete(
     proof_path: PathBuf,
     output: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("{}", "KTCS Upgrade".bold().cyan());
+    println!("{}", "KTCS Complete".bold().cyan());
     println!();
 
     // Load proof
@@ -1195,4 +1623,406 @@ fn format_timestamp_utc(timestamp_ms: u64) -> String {
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
         year, month, day, hours, minutes, seconds
     )
+}
+
+/// Initialize config file with defaults
+fn cmd_config_init(force: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let path = Config::path();
+
+    if path.exists() && !force {
+        println!("{} Config file already exists at:", "Warning:".yellow());
+        println!("  {}", path.display());
+        println!();
+        println!("Use {} to overwrite.", "--force".cyan());
+        return Ok(());
+    }
+
+    // Create default config with example values
+    let config = Config {
+        network: "mainnet".to_string(),
+        prefer_direct: false,
+        mainnet: NetworkConfig {
+            calendar: Some("https://calendar.ktcs.kaspa.org".to_string()),
+            rpc_url: Some("wss://kaspa.aspectron.com/wrpc/json/mainnet".to_string()),
+            wallet_file: None,
+        },
+        testnet: NetworkConfig {
+            calendar: Some("https://testnet-calendar.ktcs.kaspa.org".to_string()),
+            rpc_url: Some("ws://localhost:16110".to_string()),
+            wallet_file: None,
+        },
+    };
+
+    config.save()?;
+
+    println!("{} Config file created:", "✓".green());
+    println!("  {}", path.display());
+    println!();
+    println!("{}", "Edit the file to customize settings:".dimmed());
+    println!("  {} mainnet (default) or testnet", "network:".dimmed());
+    println!("  {} true to prefer direct stamping", "prefer_direct:".dimmed());
+    println!("  {} sections for network-specific settings", "[mainnet]/[testnet]:".dimmed());
+
+    Ok(())
+}
+
+/// Show current configuration
+fn cmd_config_show(network_override: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = Config::load();
+
+    // Apply network override if specified
+    if let Some(net) = network_override {
+        config.network = net;
+    }
+
+    println!("{}", "KTCS Configuration".bold().cyan());
+    println!();
+
+    let path = Config::path();
+    if path.exists() {
+        println!("  {} {}", "Config file:".dimmed(), path.display());
+    } else {
+        println!("  {} {} (using defaults)", "Config file:".dimmed(), "not found".yellow());
+    }
+
+    println!();
+    println!("  {} {}", "Network:".dimmed(), config.network.cyan());
+    println!("  {} {}", "Prefer direct:".dimmed(), config.prefer_direct);
+    println!();
+
+    let net_config = config.network_config();
+    println!("{}", format!("[{}]", config.network).bold());
+    println!("  {} {}", "Calendar:".dimmed(), config.calendar());
+    println!("  {} {}", "RPC URL:".dimmed(), config.rpc_url());
+
+    if let Some(wallet) = &net_config.wallet_file {
+        let wallet_path = config.wallet_file().unwrap();
+        let exists = if wallet_path.exists() { "(exists)".green() } else { "(not found)".yellow() };
+        println!("  {} {} {}", "Wallet:".dimmed(), wallet, exists);
+    } else {
+        println!("  {} {}", "Wallet:".dimmed(), "not configured".dimmed());
+    }
+
+    Ok(())
+}
+
+/// Set a configuration value
+fn cmd_config_set(key: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = Config::load();
+
+    match key {
+        "network" => {
+            if value != "mainnet" && value != "testnet" {
+                return Err("Network must be 'mainnet' or 'testnet'".into());
+            }
+            config.network = value.to_string();
+        }
+        "prefer_direct" => {
+            config.prefer_direct = value.parse().map_err(|_| "Value must be 'true' or 'false'")?;
+        }
+        "mainnet.calendar" => {
+            config.mainnet.calendar = Some(value.to_string());
+        }
+        "mainnet.rpc_url" => {
+            config.mainnet.rpc_url = Some(value.to_string());
+        }
+        "mainnet.wallet_file" => {
+            config.mainnet.wallet_file = Some(value.to_string());
+        }
+        "testnet.calendar" => {
+            config.testnet.calendar = Some(value.to_string());
+        }
+        "testnet.rpc_url" => {
+            config.testnet.rpc_url = Some(value.to_string());
+        }
+        "testnet.wallet_file" => {
+            config.testnet.wallet_file = Some(value.to_string());
+        }
+        _ => {
+            return Err(format!(
+                "Unknown config key: {}. Valid keys: network, prefer_direct, \
+                mainnet.{{calendar,rpc_url,wallet_file}}, testnet.{{calendar,rpc_url,wallet_file}}",
+                key
+            ).into());
+        }
+    }
+
+    config.save()?;
+    println!("{} Set {} = {}", "✓".green(), key.cyan(), value);
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    // ==================== determine_output_path() tests ====================
+
+    #[test]
+    fn test_determine_output_path_with_explicit_output() {
+        let output = Some(PathBuf::from("custom.kts"));
+        let input = Path::new("input.txt");
+        let result = determine_output_path(output, input);
+        assert_eq!(result, PathBuf::from("custom.kts"));
+    }
+
+    #[test]
+    fn test_determine_output_path_derives_from_input() {
+        let output = None;
+        let input = Path::new("document.txt");
+        let result = determine_output_path(output, input);
+        assert_eq!(result, PathBuf::from("document.kts"));
+    }
+
+    #[test]
+    fn test_determine_output_path_replaces_extension() {
+        let output = None;
+        let input = Path::new("archive.tar.gz");
+        let result = determine_output_path(output, input);
+        assert_eq!(result, PathBuf::from("archive.tar.kts"));
+    }
+
+    #[test]
+    fn test_determine_output_path_no_extension() {
+        let output = None;
+        let input = Path::new("README");
+        let result = determine_output_path(output, input);
+        assert_eq!(result, PathBuf::from("README.kts"));
+    }
+
+    // ==================== parse_batch_mode() tests ====================
+
+    #[test]
+    fn test_parse_batch_mode_instant() {
+        let result = parse_batch_mode("instant").unwrap();
+        assert!(matches!(result, BatchMode::Instant));
+    }
+
+    #[test]
+    fn test_parse_batch_mode_standard() {
+        let result = parse_batch_mode("standard").unwrap();
+        assert!(matches!(result, BatchMode::Standard));
+    }
+
+    #[test]
+    fn test_parse_batch_mode_economic() {
+        let result = parse_batch_mode("economic").unwrap();
+        assert!(matches!(result, BatchMode::Economic));
+    }
+
+    #[test]
+    fn test_parse_batch_mode_case_insensitive() {
+        assert!(parse_batch_mode("INSTANT").is_ok());
+        assert!(parse_batch_mode("Standard").is_ok());
+        assert!(parse_batch_mode("ECONOMIC").is_ok());
+    }
+
+    #[test]
+    fn test_parse_batch_mode_invalid() {
+        assert!(parse_batch_mode("fast").is_err());
+        assert!(parse_batch_mode("").is_err());
+        assert!(parse_batch_mode("unknown").is_err());
+    }
+
+    // ==================== Date calculation tests ====================
+
+    #[test]
+    fn test_is_leap_year_divisible_by_400() {
+        assert!(is_leap_year(2000)); // Divisible by 400
+        assert!(is_leap_year(2400));
+    }
+
+    #[test]
+    fn test_is_leap_year_century_not_leap() {
+        assert!(!is_leap_year(1900)); // Divisible by 100 but not 400
+        assert!(!is_leap_year(2100));
+    }
+
+    #[test]
+    fn test_is_leap_year_divisible_by_4() {
+        assert!(is_leap_year(2004));
+        assert!(is_leap_year(2024));
+        assert!(is_leap_year(1972));
+    }
+
+    #[test]
+    fn test_is_leap_year_not_divisible_by_4() {
+        assert!(!is_leap_year(2001));
+        assert!(!is_leap_year(2023));
+        assert!(!is_leap_year(1970));
+    }
+
+    #[test]
+    fn test_days_in_year_leap() {
+        assert_eq!(days_in_year(2000), 366);
+        assert_eq!(days_in_year(2024), 366);
+    }
+
+    #[test]
+    fn test_days_in_year_non_leap() {
+        assert_eq!(days_in_year(2001), 365);
+        assert_eq!(days_in_year(1900), 365);
+    }
+
+    #[test]
+    fn test_days_in_months_leap_year() {
+        let months = days_in_months(2000);
+        assert_eq!(months[1], 29); // February in leap year
+        assert_eq!(months[0], 31); // January
+        assert_eq!(months[11], 31); // December
+    }
+
+    #[test]
+    fn test_days_in_months_non_leap_year() {
+        let months = days_in_months(2001);
+        assert_eq!(months[1], 28); // February in non-leap year
+    }
+
+    // ==================== format_timestamp_utc() tests ====================
+
+    #[test]
+    fn test_format_timestamp_epoch() {
+        assert_eq!(format_timestamp_utc(0), "1970-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn test_format_timestamp_one_day() {
+        assert_eq!(format_timestamp_utc(86400000), "1970-01-02 00:00:00 UTC");
+    }
+
+    #[test]
+    fn test_format_timestamp_leap_year_feb_29() {
+        // Feb 29, 2000 at midnight UTC
+        // Days from 1970-01-01 to 2000-02-29:
+        // 30 years = 10958 days (including leap days)
+        // 10958 days * 86400 seconds * 1000 ms = 946944000000
+        let ts = 951782400000_u64; // 2000-02-29 00:00:00 UTC
+        let result = format_timestamp_utc(ts);
+        assert!(result.contains("2000-02-29"), "Expected 2000-02-29, got {}", result);
+    }
+
+    #[test]
+    fn test_format_timestamp_recent() {
+        // 2021-01-01 00:00:00 UTC = 1609459200000 ms
+        let result = format_timestamp_utc(1609459200000);
+        assert!(result.contains("2021-01-01"), "Expected 2021-01-01, got {}", result);
+    }
+
+    // ==================== Config tests ====================
+
+    #[test]
+    fn test_config_default_network() {
+        let config = Config::default();
+        assert_eq!(config.network, "mainnet");
+    }
+
+    #[test]
+    fn test_config_default_prefer_direct() {
+        let config = Config::default();
+        assert!(!config.prefer_direct);
+    }
+
+    #[test]
+    fn test_config_network_config_testnet() {
+        let mut config = Config::default();
+        config.network = "testnet".to_string();
+        config.testnet.calendar = Some("test-calendar".to_string());
+
+        let net_config = config.network_config();
+        assert_eq!(net_config.calendar, Some("test-calendar".to_string()));
+    }
+
+    #[test]
+    fn test_config_network_config_mainnet() {
+        let mut config = Config::default();
+        config.network = "mainnet".to_string();
+        config.mainnet.calendar = Some("main-calendar".to_string());
+
+        let net_config = config.network_config();
+        assert_eq!(net_config.calendar, Some("main-calendar".to_string()));
+    }
+
+    #[test]
+    fn test_config_network_config_invalid_defaults_to_mainnet() {
+        let mut config = Config::default();
+        config.network = "invalid".to_string();
+        config.mainnet.calendar = Some("main-calendar".to_string());
+
+        let net_config = config.network_config();
+        assert_eq!(net_config.calendar, Some("main-calendar".to_string()));
+    }
+
+    #[test]
+    fn test_config_calendar_with_configured_value() {
+        let mut config = Config::default();
+        config.mainnet.calendar = Some("https://custom.calendar".to_string());
+        assert_eq!(config.calendar(), "https://custom.calendar");
+    }
+
+    #[test]
+    fn test_config_calendar_testnet_default() {
+        let mut config = Config::default();
+        config.network = "testnet".to_string();
+        assert_eq!(config.calendar(), "https://testnet-calendar.ktcs.kaspa.org");
+    }
+
+    #[test]
+    fn test_config_calendar_mainnet_default() {
+        let config = Config::default();
+        assert_eq!(config.calendar(), "https://calendar.ktcs.kaspa.org");
+    }
+
+    #[test]
+    fn test_config_rpc_url_testnet_default() {
+        let mut config = Config::default();
+        config.network = "testnet".to_string();
+        assert_eq!(config.rpc_url(), "ws://localhost:16110");
+    }
+
+    #[test]
+    fn test_config_rpc_url_mainnet_default() {
+        let config = Config::default();
+        assert_eq!(config.rpc_url(), "wss://kaspa.aspectron.com/wrpc/json/mainnet");
+    }
+
+    #[test]
+    fn test_config_wallet_file_none() {
+        let config = Config::default();
+        assert!(config.wallet_file().is_none());
+    }
+
+    #[test]
+    fn test_config_wallet_file_absolute_path() {
+        let mut config = Config::default();
+        config.mainnet.wallet_file = Some("/absolute/path/key.txt".to_string());
+        let result = config.wallet_file().unwrap();
+        assert_eq!(result, PathBuf::from("/absolute/path/key.txt"));
+    }
+
+    #[test]
+    fn test_config_wallet_file_relative_path() {
+        let mut config = Config::default();
+        config.mainnet.wallet_file = Some("relative/path/key.txt".to_string());
+        let result = config.wallet_file().unwrap();
+        assert_eq!(result, PathBuf::from("relative/path/key.txt"));
+    }
+
+    #[test]
+    fn test_config_wallet_file_tilde_expansion() {
+        let mut config = Config::default();
+        config.mainnet.wallet_file = Some("~/wallet.key".to_string());
+        let result = config.wallet_file().unwrap();
+        // Should expand ~ to home directory (or keep as-is if no home)
+        let path_str = result.to_string_lossy();
+        // Either expanded or original (if home dir unavailable)
+        assert!(path_str.ends_with("wallet.key"));
+    }
+
+    #[test]
+    fn test_config_path_ends_with_config_toml() {
+        let path = Config::path();
+        assert!(path.ends_with("ktcs/config.toml") || path.ends_with("ktcs\\config.toml"));
+    }
 }

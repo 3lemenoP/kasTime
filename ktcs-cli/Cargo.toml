@@ -29,3 +29,20 @@ base64 = "0.21"
 
 # For colored output
 colored = "2.0"
+
+# For config file parsing
+toml = "0.8"
+
+# For finding config directory
+dirs = "5.0"
+
+# For shell completions
+clap_complete = "4"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+pretty_assertions = "1"
+wiremock = "0.6"
+tokio-test = "0.4"
