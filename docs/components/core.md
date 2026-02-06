@@ -24,13 +24,16 @@ ktcs-core = { path = "./ktcs-core" }
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `wallet` | Yes | Wallet operations and signing |
-| `kaspa-rpc` | No | Kaspa node RPC client |
-| `wasm` | No | WASM compatibility |
+| `keygen` | Yes | Private key generation (requires `getrandom`, `rand`) |
+| `kaspa-client` | No | Full Kaspa node connectivity (adds `tokio`, WebSocket, HTTP) |
+| `wasm` | No | WASM compatibility (disables native crypto) |
 
 ```toml
-[dependencies]
-ktcs-core = { path = "./ktcs-core", default-features = false, features = ["wallet"] }
+# With Kaspa client for direct stamping
+ktcs-core = { path = "./ktcs-core", features = ["kaspa-client"] }
+
+# For WASM builds (browser verification)
+ktcs-core = { path = "./ktcs-core", default-features = false, features = ["wasm"] }
 ```
 
 ## Quick Start
@@ -49,13 +52,16 @@ println!("SHA256: {}", hex::encode(digest));
 
 ```rust
 use ktcs_core::{KtcsProof, Operation, PendingAttestation, Attestation};
+use ktcs_core::merkle::sha256;
 
 // Start with document digest
 let digest = sha256(b"document");
 
-// Create pending proof
-let proof = KtcsProof::new(digest)
-    .with_pending_attestation("https://calendar.example.com/v1/stamp/ktcs_abc123");
+// Create proof and add attestation
+let mut proof = KtcsProof::new(digest.to_vec());
+proof.add_attestation(Attestation::Pending(PendingAttestation {
+    calendar_url: "https://calendar.example.com/v1/stamp/ktcs_abc123".to_string(),
+}));
 ```
 
 ### Verify a Proof
@@ -89,27 +95,24 @@ let digests = vec![
     sha256(b"doc3"),
 ];
 
-let tree = MerkleTree::from_leaves(&digests);
+let tree = MerkleTree::build(digests)?;
 let root = tree.root();
 
 // Get proof path for a specific leaf
-let path = tree.proof(0);  // Path for first document
+let proof = tree.get_proof(0)?;  // Path for first document
 ```
 
 ### Wallet Operations
 
 ```rust
-use ktcs_core::wallet::{PrivateKey, derive_address};
+use ktcs_core::KaspaWallet;
 
-// Generate new key
-let key = PrivateKey::random();
+// Create wallet from hex-encoded private key
+let wallet = KaspaWallet::from_hex("abc123...", "mainnet")?;
+println!("Address: {}", wallet.address());
 
-// Get address
-let address = derive_address(&key, "mainnet");
-println!("Address: {}", address);
-
-// From hex
-let key = PrivateKey::from_hex("abc123...")?;
+// Sign a sighash
+let signature = wallet.sign(&sighash)?;
 ```
 
 ## Types Reference
@@ -134,11 +137,12 @@ Merkle path transformations:
 
 ```rust
 pub enum Operation {
-    Append(Vec<u8>),      // Append data, then hash
-    Prepend(Vec<u8>),     // Prepend data, then hash
-    Sha256,               // Apply SHA256
-    Ripemd160,            // Apply RIPEMD160
-    Keccak256,            // Apply Keccak256
+    Append(Vec<u8>),      // Append data: H' = current || data
+    Prepend(Vec<u8>),     // Prepend data: H' = data || current
+    Sha256,               // Apply SHA256: H' = SHA256(current)
+    Ripemd160,            // Apply RIPEMD160: H' = RIPEMD160(current)
+    Keccak256,            // Apply Keccak256: H' = Keccak256(current)
+    Fork(usize),          // Branch into N parallel paths (for multi-attestation)
 }
 ```
 

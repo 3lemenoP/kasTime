@@ -43,7 +43,7 @@ Configure via environment variables. Copy `.env.example` to `.env`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `sqlite:./data/ktcs-calendar.db?mode=rwc` | SQLite connection URL |
+| `DATABASE_URL` | `sqlite:ktcs-calendar.db` | SQLite connection URL |
 
 ### Server
 
@@ -105,7 +105,7 @@ For sustainable operation, configure a RETURN wallet that receives change and re
 |----------|---------|-------------|
 | `FEE_PER_GRAM` | `1` | Fee rate (sompi per gram) |
 | `CONFIRMATION_TIMEOUT_MS` | `60000` | TX confirmation timeout |
-| `KTCS_INCLUDE_MAGIC` | `true` | Include KTCS magic prefix |
+| `KTCS_INCLUDE_MAGIC` | `false` | Include KTCS magic prefix in commitment |
 
 ### Testing
 

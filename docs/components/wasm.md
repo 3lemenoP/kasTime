@@ -200,14 +200,16 @@ ws.send(JSON.stringify(rpcRequest));
 const digestHex = compute_sha256_hex(documentBytes);
 const nonceHex = generate_nonce();
 
-const pendingProofBytes = build_pending_proof(
-  digestHex,
-  nonceHex,
-  'https://calendar.example.com/v1/stamp/ktcs_abc123'
-);
+// Build pending proof with digest and nonce
+const result = build_pending_proof(digestHex, nonceHex);
+
+console.log(result.digest);       // Original digest hex
+console.log(result.nonce);        // Nonce hex
+console.log(result.commitment);   // Computed commitment hex
+console.log(result.proof_bytes);  // Uint8Array of pending proof
 
 // Save pending proof
-downloadFile(pendingProofBytes, 'document.kts');
+downloadFile(result.proof_bytes, 'document.kts');
 ```
 
 ### Complete Proof with Attestation
@@ -276,9 +278,15 @@ const completeProofBytes = complete_proof(
 
 | Function | Description |
 |----------|-------------|
-| `build_pending_proof(...)` | Create pending proof |
-| `complete_proof(...)` | Add attestation to proof |
+| `build_pending_proof(digestHex, nonceHex)` | Create pending proof |
+| `complete_proof(pendingProofBytes, attestationJson)` | Add attestation to proof |
 | `serialize_proof_to_bytes(proofJson)` | Serialize proof object |
+
+### Utility
+
+| Function | Description |
+|----------|-------------|
+| `get_version()` | Get library version string |
 
 ### Constants
 

@@ -53,16 +53,19 @@ src/
 │   │   ├── Button.tsx
 │   │   ├── FileDropZone.tsx
 │   │   ├── MetricCard.tsx
+│   │   ├── ThermodynamicGauge.tsx
 │   │   └── WalletInput.tsx
-│   ├── visualizers/       # D3/Framer Motion visualizations
+│   ├── proof/             # Proof-related components
+│   │   ├── BlockAttestation.tsx
+│   │   └── ConfirmationHero.tsx
 │   └── Layout.tsx         # Main layout wrapper
 ├── lib/                    # Utilities
-│   └── wasm.ts            # WASM module loader
+│   ├── wasm.ts            # WASM module loader
+│   └── blockchainVerify.ts # Blockchain verification
 ├── pages/                  # Page components
 │   ├── HomePage.tsx       # Stamp creation
 │   ├── ProofPage.tsx      # Proof display
-│   ├── VerifyPage.tsx     # Verification
-│   └── NetworkPage.tsx    # Network status
+│   └── VerifyPage.tsx     # Verification
 ├── stores/                 # Zustand stores
 │   └── stamp.ts           # Stamp state
 ├── types/                  # TypeScript types

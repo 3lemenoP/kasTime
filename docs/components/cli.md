@@ -18,8 +18,14 @@ cargo build --release -p ktcs-cli
 
 Create a timestamp for a file via calendar or direct on-chain.
 
+!!! note "Calendar Mode Status"
+    Calendar mode currently creates a pending proof locally. For full calendar
+    integration, use the web interface or API to submit digests, then use
+    `ktcs upgrade` to complete pending proofs. Direct stamping (`--direct`)
+    is fully implemented.
+
 ```bash
-# Via calendar (default, cost-efficient)
+# Via calendar (creates pending proof)
 ktcs stamp document.pdf
 
 # Direct on-chain (requires wallet)
@@ -61,6 +67,9 @@ ktcs verify document.kts
 # Verify against original data
 ktcs verify --data document.pdf document.kts
 ktcs verify -d document.pdf document.kts
+
+# Verify attestation exists on blockchain
+ktcs verify --chain document.kts
 ```
 
 **Options:**
@@ -68,6 +77,8 @@ ktcs verify -d document.pdf document.kts
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--data` | `-d` | Original data file for full verification |
+| `--chain` | | Verify attestation exists on blockchain |
+| `--rpc-url` | | Kaspa RPC URL for chain verification (default: mainnet resolver) |
 
 **Output:**
 
@@ -240,11 +251,11 @@ UTXOs: 3
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | General error |
-| 2 | Invalid arguments |
-| 3 | File not found |
-| 4 | Verification failed |
-| 5 | Network error |
+| 1 | Error (any failure) |
+
+!!! note "Exit Code Details"
+    The CLI currently uses a single non-zero exit code (1) for all error conditions.
+    Future versions may implement more specific exit codes for scripting purposes.
 
 ## Security
 
