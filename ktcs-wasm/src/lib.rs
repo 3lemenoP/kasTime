@@ -921,6 +921,8 @@ pub fn complete_proof(
 // =============================================================================
 
 /// RPC transaction format for Kaspa node submission
+/// Note: u64 values are serialized as numbers (not strings) — Rust serde
+/// handles precision correctly, and sendRawRequest bypasses JavaScript.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RpcTransaction {
@@ -954,14 +956,8 @@ struct RpcOutpoint {
 #[serde(rename_all = "camelCase")]
 struct RpcOutput {
     value: u64,
-    script_public_key: RpcScriptPublicKey,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RpcScriptPublicKey {
-    version: u16,
-    script: String,
+    /// Flat hex string: version (2 bytes BE) + script, matching Kaspa wRPC format
+    script_public_key: String,
 }
 
 #[derive(Serialize)]
@@ -1002,15 +998,18 @@ pub fn create_submit_tx_rpc_request(signed_tx_json: &str) -> Result<String, JsVa
                 index: inp.previous_outpoint_index,
             },
             signature_script: hex::encode(&inp.signature_script),
-            sequence: u64::MAX, // Kaspa standard - Rust handles this correctly
+            sequence: u64::MAX,
             sig_op_count: 1, // Standard for P2PK
         }).collect(),
-        outputs: tx.outputs.iter().map(|out| RpcOutput {
-            value: out.amount,
-            script_public_key: RpcScriptPublicKey {
-                version: out.script_public_key.version,
-                script: hex::encode(&out.script_public_key.script),
-            },
+        outputs: tx.outputs.iter().map(|out| {
+            // ScriptPublicKey is encoded as: version (2 bytes BE) + script
+            let mut spk_bytes = Vec::with_capacity(2 + out.script_public_key.script.len());
+            spk_bytes.extend_from_slice(&out.script_public_key.version.to_be_bytes());
+            spk_bytes.extend_from_slice(&out.script_public_key.script);
+            RpcOutput {
+                value: out.amount,
+                script_public_key: hex::encode(spk_bytes),
+            }
         }).collect(),
         lock_time: tx.lock_time,
         subnetwork_id: hex::encode(tx.subnetwork_id),

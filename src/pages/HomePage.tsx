@@ -6,8 +6,21 @@ import FileDropZone from '../components/ui/FileDropZone'
 import WalletInput from '../components/ui/WalletInput'
 import Button from '../components/ui/Button'
 import { useStampStore } from '../stores/stamp'
-import { computeSha256Hex, initWasm, isWasmInitialized } from '../lib/wasm'
+import {
+  computeSha256Hex,
+  initWasm,
+  isWasmInitialized,
+  generateNonce,
+  createCommitment,
+  buildCommitmentTransaction,
+  signTransaction,
+  createSubmitTxRpcRequest,
+  buildPendingProof,
+  completeProof,
+} from '../lib/wasm'
+import type { WasmUtxo } from '../lib/wasm'
 import { createCalendarClient } from '../api/calendar'
+import { KaspaClient } from '../api/kaspa'
 import type { BatchMode } from '../types/proof'
 
 const CALENDAR_URL = import.meta.env.VITE_CALENDAR_URL || 'http://localhost:3001'
@@ -72,7 +85,7 @@ function HomePage(): JSX.Element {
   }, [setFile, setHash, setStep, setError])
 
   // Handle stamp submission (calendar mode)
-  const handleStamp = useCallback(async () => {
+  const handleCalendarStamp = useCallback(async () => {
     if (!hash) return
 
     setIsSubmitting(true)
@@ -94,6 +107,132 @@ function HomePage(): JSX.Element {
       setIsSubmitting(false)
     }
   }, [hash, batchMode, setStep, setStampResponse, setError, navigate])
+
+  // Handle stamp submission (direct mode - own wallet)
+  const handleDirectStamp = useCallback(async () => {
+    if (!hash || !walletKey || !walletAddress) return
+
+    setIsSubmitting(true)
+    const store = useStampStore.getState()
+
+    let kaspaClient: KaspaClient | null = null
+
+    try {
+      // Ensure WASM is initialized
+      if (!isWasmInitialized()) {
+        await initWasm()
+      }
+
+      // 1. Generate nonce and create commitment
+      store.setDirectStep('building-tx')
+      const nonce = generateNonce()
+      const commitment = createCommitment(nonce, hash)
+      store.setDirectStampState({ nonce, commitment })
+
+      // 2. Connect to Kaspa node
+      store.setDirectStep('connecting')
+      kaspaClient = new KaspaClient(store.rpcUrl)
+      await kaspaClient.connect()
+      store.setRpcConnected(true)
+
+      // 3. Fetch UTXOs for the wallet address (derived from private key)
+      store.setDirectStep('fetching-utxos')
+      const utxos = await kaspaClient.getUtxosByAddress(walletAddress)
+      store.setUtxos(utxos)
+
+      if (utxos.length === 0) {
+        throw new Error('No UTXOs found. Wallet has no funds.')
+      }
+
+      // Convert UTXOs to WASM format
+      // Kaspa API returns scriptPublicKey with a 2-byte version prefix (e.g., "000020f4...ac").
+      // The WASM expects just the raw script bytes, so strip the first 4 hex chars (2 bytes).
+      const wasmUtxos: WasmUtxo[] = utxos.map(u => {
+        const spkHex = typeof u.scriptPublicKey === 'string'
+          ? u.scriptPublicKey
+          : u.scriptPublicKey.scriptPublicKey
+        return {
+          transaction_id: u.transactionId,
+          index: u.index,
+          amount: u.amount.toString(),
+          script_public_key_hex: spkHex.slice(4), // Strip 2-byte version prefix
+          block_daa_score: Number(u.blockDaaScore),
+          is_coinbase: u.isCoinbase,
+        }
+      })
+
+      // 4. Build transaction using wallet address as change address
+      store.setDirectStep('building-tx')
+      const txResult = buildCommitmentTransaction(
+        commitment,
+        wasmUtxos,
+        walletAddress,
+        10, // fee per gram
+      )
+
+      // 5. Sign transaction with the wallet's private key
+      store.setDirectStep('signing')
+      const signed = signTransaction(
+        txResult.transaction_json,
+        wasmUtxos,
+        walletKey,
+        network,
+      )
+      store.setDirectStampState({ transactionId: signed.transaction_id })
+
+      // 6. Submit transaction to Kaspa network
+      store.setDirectStep('submitting')
+      const txId = await kaspaClient.submitTransactionFromWasm(
+        signed.transaction_json,
+        createSubmitTxRpcRequest,
+      )
+
+      // 7. Wait for block confirmation
+      store.setDirectStep('confirming')
+      const { blockInfo } = await kaspaClient.waitForTransactionAcceptance(txId)
+
+      // 8. Build complete proof with attestation
+      const pendingProof = buildPendingProof(hash, nonce)
+      const completeProofBytes = completeProof(pendingProof.proof_bytes, {
+        tx_hash: txId,
+        block_hash: blockInfo.hash,
+        daa_score: Number(blockInfo.daaScore),
+        blue_score: Number(blockInfo.blueScore),
+        timestamp: Number(blockInfo.timestamp),
+        blue_work: blockInfo.blueWork,
+        parent_hashes: blockInfo.parentHashes,
+      })
+
+      // Store proof as base64
+      const proofBase64 = btoa(String.fromCharCode(...completeProofBytes))
+      store.setConfirmedProof(proofBase64)
+      store.setDirectStampState({
+        transactionId: txId,
+        blockInfo,
+      })
+
+      store.setDirectStep('complete')
+      kaspaClient.disconnect()
+
+      // Navigate to proof page
+      navigate('/proof/direct')
+    } catch (err) {
+      console.error('Direct stamp error:', err)
+      setError(err instanceof Error ? err.message : 'Direct stamping failed')
+      store.setDirectStep('error')
+      kaspaClient?.disconnect()
+    } finally {
+      setIsSubmitting(false)
+    }
+  }, [hash, walletKey, walletAddress, network, setError, navigate])
+
+  // Unified stamp handler - dispatches based on mode
+  const handleStamp = useCallback(() => {
+    if (mode === 'direct') {
+      return handleDirectStamp()
+    }
+    return handleCalendarStamp()
+  }, [mode, handleDirectStamp, handleCalendarStamp])
 
   // Handle wallet address derivation callback
   const handleAddressChange = useCallback((address: string | null) => {
