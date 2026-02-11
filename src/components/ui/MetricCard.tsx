@@ -13,7 +13,7 @@ function MetricCard({ label, value, sublabel, status }: MetricCardProps) {
   }
 
   return (
-    <div className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg p-5">
+    <div className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-sm p-5">
       <div className="text-label mb-2">{label}</div>
       <div className="flex items-center gap-2">
         {status && (
@@ -23,7 +23,7 @@ function MetricCard({ label, value, sublabel, status }: MetricCardProps) {
           />
         )}
         <span
-          className="text-xl font-display"
+          className="text-xl font-data"
           style={{ color: status ? statusColors[status] : 'var(--text-primary)' }}
         >
           {value}

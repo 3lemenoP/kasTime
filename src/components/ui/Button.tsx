@@ -11,31 +11,31 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     const baseStyles = `
       inline-flex items-center justify-center font-medium tracking-wide uppercase
       transition-all duration-200 ease-out
-      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-primary)]
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--text-secondary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-primary)]
       disabled:opacity-50 disabled:cursor-not-allowed
     `
 
     const variants = {
       primary: `
-        bg-[var(--accent-primary)] text-[var(--text-inverse)]
-        hover:brightness-110 hover:shadow-[var(--glow-active)]
+        bg-white text-black
+        hover:bg-gray-100
         active:scale-[0.98]
       `,
       secondary: `
-        bg-transparent text-[var(--text-primary)] border border-[var(--border-default)]
-        hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)]
+        bg-transparent text-white border border-[var(--border-default)]
+        hover:border-[var(--text-secondary)]
         active:scale-[0.98]
       `,
       ghost: `
-        bg-transparent text-[var(--accent-secondary)]
-        hover:underline
+        bg-transparent text-[var(--text-secondary)]
+        hover:text-white
       `,
     }
 
     const sizes = {
-      sm: 'px-3 py-1.5 text-xs rounded',
-      md: 'px-6 py-3 text-sm rounded',
-      lg: 'px-8 py-4 text-base rounded-md',
+      sm: 'px-3 py-1.5 text-xs rounded-sm',
+      md: 'px-6 py-3 text-sm rounded-sm',
+      lg: 'px-8 py-4 text-base rounded-sm',
     }
 
     return (

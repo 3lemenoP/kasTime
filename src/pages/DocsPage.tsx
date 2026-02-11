@@ -244,7 +244,7 @@ function DocsPage() {
                         onClick={() => navigateTo(entry.id)}
                         className={`w-full flex items-center gap-2 px-4 py-1.5 text-sm transition-colors ${
                           activeDocId === entry.id
-                            ? 'text-[var(--accent-primary)] bg-[var(--accent-primary-muted)] border-l-2 border-[var(--accent-primary)]'
+                            ? 'text-white bg-white/10 border-l-2 border-white'
                             : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
                         }`}
                       >

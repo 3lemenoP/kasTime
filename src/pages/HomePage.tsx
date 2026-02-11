@@ -123,9 +123,8 @@ function HomePage(): JSX.Element {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
       >
-        <h1 className="text-display-xl font-display tracking-tight mb-3">
-          <span className="text-[var(--text-primary)]">TIME</span>
-          <span className="text-[var(--accent-primary)]">STAMP</span>
+        <h1 className="text-display-xl font-display tracking-tight mb-3 text-white">
+          TIMESTAMP
         </h1>
         <p className="text-body-lg text-[var(--text-secondary)]">
           Prove existence on Kaspa
@@ -157,7 +156,7 @@ function HomePage(): JSX.Element {
           ) : (
             <motion.div
               key="fileinfo"
-              className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg p-6"
+              className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-sm p-6"
               initial={{ opacity: 0, scale: 0.98 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.98 }}
@@ -166,7 +165,7 @@ function HomePage(): JSX.Element {
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-3">
                   {isHashing ? (
-                    <Loader2 className="w-5 h-5 text-[var(--accent-primary)] animate-spin" />
+                    <Loader2 className="w-5 h-5 text-[var(--text-secondary)] animate-spin" />
                   ) : (
                     <CheckCircle className="w-5 h-5 text-[var(--status-success)]" />
                   )}
@@ -186,7 +185,7 @@ function HomePage(): JSX.Element {
               {hash && (
                 <div className="mb-6">
                   <div className="text-label mb-1">SHA-256</div>
-                  <code className="font-data text-sm text-[var(--accent-primary)]">
+                  <code className="font-data text-sm text-[var(--accent-kaspa)]">
                     {truncateHash(hash)}
                   </code>
                 </div>
@@ -194,7 +193,7 @@ function HomePage(): JSX.Element {
 
               {/* Error Display */}
               {error && (
-                <div className="mb-4 p-3 rounded bg-[var(--status-error)]/10 border border-[var(--status-error)]/30">
+                <div className="mb-4 p-3 rounded-sm bg-[var(--status-error)]/10 border border-[var(--status-error)]/30">
                   <p className="text-sm text-[var(--status-error)]">{error}</p>
                 </div>
               )}
@@ -241,7 +240,7 @@ function HomePage(): JSX.Element {
           <AnimatePresence>
             {showOptions && (
               <motion.div
-                className="mt-4 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg p-6 space-y-6"
+                className="mt-4 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-sm p-6 space-y-6"
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
@@ -252,9 +251,9 @@ function HomePage(): JSX.Element {
                   <div className="flex gap-2">
                     <button
                       onClick={() => setMode('calendar')}
-                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded border transition-all ${
+                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-sm border transition-all ${
                         isCalendarMode
-                          ? 'bg-[var(--accent-primary-muted)] border-[var(--accent-primary)] text-[var(--accent-primary)]'
+                          ? 'bg-white border-white text-black'
                           : 'bg-transparent border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]'
                       }`}
                     >
@@ -263,9 +262,9 @@ function HomePage(): JSX.Element {
                     </button>
                     <button
                       onClick={() => setMode('direct')}
-                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded border transition-all ${
+                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-sm border transition-all ${
                         isDirectMode
-                          ? 'bg-[var(--accent-primary-muted)] border-[var(--accent-primary)] text-[var(--accent-primary)]'
+                          ? 'bg-white border-white text-black'
                           : 'bg-transparent border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]'
                       }`}
                     >
@@ -289,9 +288,9 @@ function HomePage(): JSX.Element {
                         <button
                           key={value}
                           onClick={() => setBatchMode(value)}
-                          className={`flex-1 flex flex-col items-center gap-1 px-3 py-3 rounded border transition-all ${
+                          className={`flex-1 flex flex-col items-center gap-1 px-3 py-3 rounded-sm border transition-all ${
                             batchMode === value
-                              ? 'bg-[var(--accent-primary-muted)] border-[var(--accent-primary)] text-[var(--accent-primary)]'
+                              ? 'bg-white border-white text-black'
                               : 'bg-transparent border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]'
                           }`}
                         >

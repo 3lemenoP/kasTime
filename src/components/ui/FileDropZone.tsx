@@ -58,11 +58,11 @@ function FileDropZone({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       className={`
-        relative border-2 border-dashed rounded-lg p-8
+        relative border border-dashed rounded-sm p-8
         transition-all duration-200 ease-out
         ${isDragging
-          ? 'border-[var(--accent-primary)] bg-[var(--accent-primary-dim)]'
-          : 'border-[var(--border-default)] bg-[var(--bg-tertiary)] hover:border-[var(--border-strong)]'
+          ? 'border-white bg-white/5'
+          : 'border-[var(--border-subtle)] bg-[var(--bg-tertiary)] hover:border-[var(--border-strong)]'
         }
       `}
     >
@@ -77,19 +77,19 @@ function FileDropZone({
       <div className="flex flex-col items-center justify-center text-center">
         {isLoading ? (
           <>
-            <Loader2 className="w-10 h-10 text-[var(--accent-primary)] mb-4 animate-spin" />
+            <Loader2 className="w-10 h-10 text-[var(--text-secondary)] mb-4 animate-spin" />
             <p className="text-sm text-[var(--text-secondary)]">Computing hash...</p>
           </>
         ) : (
           <>
             <div className={`
-              w-16 h-16 rounded-lg flex items-center justify-center mb-4
+              w-16 h-16 rounded-sm flex items-center justify-center mb-4
               transition-colors duration-200
-              ${isDragging ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-quaternary)]'}
+              ${isDragging ? 'bg-white' : 'bg-[var(--bg-elevated)]'}
             `}>
               <Upload className={`
                 w-8 h-8 transition-colors duration-200
-                ${isDragging ? 'text-[var(--text-inverse)]' : 'text-[var(--text-tertiary)]'}
+                ${isDragging ? 'text-black' : 'text-[var(--text-tertiary)]'}
               `} />
             </div>
             <p className="text-sm font-medium text-[var(--text-primary)] mb-1">

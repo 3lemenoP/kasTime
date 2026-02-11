@@ -48,33 +48,21 @@ function ConfirmationHero({
     <motion.div
       className="min-h-[60vh] flex flex-col items-center justify-center px-6 py-16 bg-[var(--bg-void)] relative overflow-hidden"
       initial={{ backgroundColor: 'var(--bg-void)' }}
-      animate={{ backgroundColor: ['var(--bg-void)', 'var(--accent-primary)', 'var(--bg-void)'] }}
+      animate={{ backgroundColor: ['var(--bg-void)', 'rgba(255,255,255,0.05)', 'var(--bg-void)'] }}
       transition={{ duration: 0.4, times: [0, 0.5, 1] }}
     >
-      {/* Subtle grid pattern overlay */}
-      <div
-        className="absolute inset-0 opacity-[0.03]"
-        style={{
-          backgroundImage: `
-            linear-gradient(var(--text-primary) 1px, transparent 1px),
-            linear-gradient(90deg, var(--text-primary) 1px, transparent 1px)
-          `,
-          backgroundSize: '40px 40px',
-        }}
-      />
-
       {/* Content */}
-      <div className="relative z-10 text-center max-w-2xl mx-auto">
+      <div className="relative text-center max-w-2xl mx-auto">
         {/* Direct mode badge */}
         {isDirectMode && (
           <motion.div
-            className="inline-flex items-center gap-2 px-3 py-1.5 mb-6 rounded bg-[var(--accent-primary-muted)] border border-[var(--accent-primary-dim)]"
+            className="inline-flex items-center gap-2 px-3 py-1.5 mb-6 rounded-sm bg-[var(--bg-tertiary)] border border-[var(--border-default)]"
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2 }}
           >
-            <Wallet className="w-4 h-4 text-[var(--accent-primary)]" />
-            <span className="text-xs font-medium text-[var(--accent-primary)] tracking-wide">DIRECT WALLET</span>
+            <Wallet className="w-4 h-4 text-white" />
+            <span className="text-xs font-medium text-white tracking-wide">DIRECT WALLET</span>
           </motion.div>
         )}
 
@@ -98,7 +86,7 @@ function ConfirmationHero({
           <div className="text-display-lg text-[var(--text-primary)] font-display">
             {formatDate(timestamp)}
           </div>
-          <div className="text-display-md text-[var(--accent-primary)] font-display mt-1">
+          <div className="text-display-md text-[var(--text-secondary)] font-display mt-1">
             {formatTime(timestamp)}
           </div>
         </motion.div>
@@ -123,13 +111,13 @@ function ConfirmationHero({
             </code>
             <button
               onClick={handleCopyHash}
-              className="p-1.5 rounded hover:bg-[var(--bg-tertiary)] transition-colors"
+              className="p-1.5 rounded-sm hover:bg-[var(--bg-tertiary)] transition-colors"
               title="Copy full hash"
             >
               {copied ? (
                 <CheckCircle className="w-4 h-4 text-[var(--status-success)]" />
               ) : (
-                <Copy className="w-4 h-4 text-[var(--text-tertiary)] hover:text-[var(--accent-primary)]" />
+                <Copy className="w-4 h-4 text-[var(--text-tertiary)] hover:text-white" />
               )}
             </button>
           </div>

@@ -136,9 +136,9 @@ export default function WalletInput({
   return (
     <div className="space-y-3">
       {/* Security Warning */}
-      <div className="flex items-start gap-2 p-3 rounded bg-[var(--bg-warning)]/10 border border-[var(--bg-warning)]/30">
+      <div className="flex items-start gap-2 p-3 rounded-sm bg-[var(--status-warning)]/10 border border-[var(--status-warning)]/30">
         <svg
-          className="w-5 h-5 text-[var(--bg-warning)] flex-shrink-0 mt-0.5"
+          className="w-5 h-5 text-[var(--status-warning)] flex-shrink-0 mt-0.5"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -151,7 +151,7 @@ export default function WalletInput({
           />
         </svg>
         <div className="text-xs text-[var(--text-secondary)]">
-          <p className="font-medium text-[var(--bg-warning)]">Private Key Security</p>
+          <p className="font-medium text-[var(--status-warning)]">Private Key Security</p>
           <p className="mt-1">
             Your key is processed locally and never sent to any server. Make sure you trust this
             device and connection.
@@ -166,16 +166,16 @@ export default function WalletInput({
         </label>
         <div
           className={`
-            relative flex items-center gap-2 p-3 rounded
-            bg-[var(--bg-input)] border
+            relative flex items-center gap-2 p-3 rounded-sm
+            bg-[var(--bg-tertiary)] border
             transition-all duration-200
             ${
               isFocused
-                ? 'border-[var(--accent-primary)] shadow-[var(--glow-subtle)]'
+                ? 'border-white'
                 : error
-                  ? 'border-[var(--bg-error)]'
+                  ? 'border-[var(--status-error)]'
                   : isValid
-                    ? 'border-[var(--bg-success)]'
+                    ? 'border-[var(--status-success)]'
                     : 'border-[var(--border-default)]'
             }
             ${disabled ? 'opacity-50 cursor-not-allowed' : ''}
@@ -205,7 +205,7 @@ export default function WalletInput({
           <span
             className={`
             text-xs font-mono
-            ${value.length === 64 ? 'text-[var(--bg-success)]' : 'text-[var(--text-tertiary)]'}
+            ${value.length === 64 ? 'text-[var(--status-success)]' : 'text-[var(--text-tertiary)]'}
           `}
           >
             {value.length}/64
@@ -250,7 +250,7 @@ export default function WalletInput({
             <button
               type="button"
               onClick={handleClear}
-              className="p-1 text-[var(--text-tertiary)] hover:text-[var(--bg-error)] transition-colors"
+              className="p-1 text-[var(--text-tertiary)] hover:text-[var(--status-error)] transition-colors"
               tabIndex={-1}
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -272,7 +272,7 @@ export default function WalletInput({
               initial={{ opacity: 0, y: -5 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -5 }}
-              className="mt-1.5 text-xs text-[var(--bg-error)]"
+              className="mt-1.5 text-xs text-[var(--status-error)]"
             >
               {error}
             </motion.p>
@@ -289,18 +289,18 @@ export default function WalletInput({
             exit={{ opacity: 0, height: 0 }}
             className="overflow-hidden"
           >
-            <div className="flex items-center gap-2 p-3 rounded bg-[var(--bg-elevated)] border border-[var(--border-default)]">
+            <div className="flex items-center gap-2 p-3 rounded-sm bg-[var(--bg-elevated)] border border-[var(--border-default)]">
               <div className="flex-1 min-w-0">
                 <p className="text-xs text-[var(--text-tertiary)] mb-1">
                   {network === 'mainnet' ? 'Mainnet' : 'Testnet'} Address
                 </p>
                 {deriving ? (
                   <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 border-2 border-[var(--accent-primary)] border-t-transparent rounded-full animate-spin" />
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     <span className="text-sm text-[var(--text-secondary)]">Deriving...</span>
                   </div>
                 ) : (
-                  <p className="font-mono text-sm text-[var(--accent-secondary)] truncate">
+                  <p className="font-mono text-sm text-[var(--accent-kaspa)] truncate">
                     {address}
                   </p>
                 )}
@@ -311,7 +311,7 @@ export default function WalletInput({
                 <button
                   type="button"
                   onClick={() => navigator.clipboard.writeText(address)}
-                  className="p-2 text-[var(--text-tertiary)] hover:text-[var(--accent-primary)] transition-colors"
+                  className="p-2 text-[var(--text-tertiary)] hover:text-white transition-colors"
                   title="Copy address"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

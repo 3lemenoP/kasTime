@@ -77,7 +77,7 @@ function BlockAttestation({
 
   return (
     <motion.div
-      className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg overflow-hidden"
+      className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-sm overflow-hidden"
       variants={containerVariants}
       initial={isAnimated ? 'hidden' : 'visible'}
       animate="visible"
@@ -100,23 +100,23 @@ function BlockAttestation({
             </code>
             <button
               onClick={() => copyToClipboard(blockHash, 'blockHash')}
-              className="p-1.5 rounded hover:bg-[var(--bg-tertiary)] transition-colors flex-shrink-0"
+              className="p-1.5 rounded-sm hover:bg-[var(--bg-tertiary)] transition-colors flex-shrink-0"
               title="Copy block hash"
             >
               {copiedField === 'blockHash' ? (
                 <CheckCircle className="w-4 h-4 text-[var(--status-success)]" />
               ) : (
-                <Copy className="w-4 h-4 text-[var(--text-tertiary)] hover:text-[var(--accent-primary)]" />
+                <Copy className="w-4 h-4 text-[var(--text-tertiary)] hover:text-white" />
               )}
             </button>
             <a
               href={explorerUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="p-1.5 rounded hover:bg-[var(--bg-tertiary)] transition-colors flex-shrink-0"
+              className="p-1.5 rounded-sm hover:bg-[var(--bg-tertiary)] transition-colors flex-shrink-0"
               title="View on Kaspa Explorer"
             >
-              <ExternalLink className="w-4 h-4 text-[var(--text-tertiary)] hover:text-[var(--accent-primary)]" />
+              <ExternalLink className="w-4 h-4 text-[var(--text-tertiary)] hover:text-white" />
             </a>
           </div>
         </motion.div>
@@ -131,13 +131,13 @@ function BlockAttestation({
               </code>
               <button
                 onClick={() => copyToClipboard(txHash, 'txHash')}
-                className="p-1.5 rounded hover:bg-[var(--bg-tertiary)] transition-colors flex-shrink-0"
+                className="p-1.5 rounded-sm hover:bg-[var(--bg-tertiary)] transition-colors flex-shrink-0"
                 title="Copy transaction hash"
               >
                 {copiedField === 'txHash' ? (
                   <CheckCircle className="w-4 h-4 text-[var(--status-success)]" />
                 ) : (
-                  <Copy className="w-4 h-4 text-[var(--text-tertiary)] hover:text-[var(--accent-primary)]" />
+                  <Copy className="w-4 h-4 text-[var(--text-tertiary)] hover:text-white" />
                 )}
               </button>
             </div>
@@ -148,13 +148,13 @@ function BlockAttestation({
         <motion.div variants={itemVariants} className="grid grid-cols-2 gap-6">
           <div>
             <div className="text-label mb-1.5">DAA SCORE</div>
-            <div className="text-display-md font-display text-[var(--text-primary)]">
+            <div className="text-display-md font-data text-[var(--text-primary)]">
               {daaScore.toLocaleString()}
             </div>
           </div>
           <div>
             <div className="text-label mb-1.5">BLUE SCORE</div>
-            <div className="text-display-md font-display text-[var(--text-primary)]">
+            <div className="text-display-md font-data text-[var(--text-primary)]">
               {blueScore.toLocaleString()}
             </div>
           </div>
@@ -205,12 +205,12 @@ function BlockAttestation({
                     </code>
                     <button
                       onClick={() => copyToClipboard(hash, `parent-${index}`)}
-                      className="p-1 rounded hover:bg-[var(--bg-tertiary)] transition-colors"
+                      className="p-1 rounded-sm hover:bg-[var(--bg-tertiary)] transition-colors"
                     >
                       {copiedField === `parent-${index}` ? (
                         <CheckCircle className="w-3 h-3 text-[var(--status-success)]" />
                       ) : (
-                        <Copy className="w-3 h-3 text-[var(--text-tertiary)] hover:text-[var(--accent-primary)]" />
+                        <Copy className="w-3 h-3 text-[var(--text-tertiary)] hover:text-white" />
                       )}
                     </button>
                   </div>

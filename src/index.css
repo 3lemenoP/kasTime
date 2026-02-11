@@ -2,37 +2,33 @@
 
 /* ============================================
    KTCS Design System - CSS Variables
-   KTCS Dark UI Theme
+   LayerZero Design Language
    ============================================ */
 
 :root {
-  /* Backgrounds — Deep space blacks */
-  --bg-void: #050608;
-  --bg-primary: #0A0C10;
-  --bg-secondary: #0F1218;
-  --bg-tertiary: #151921;
-  --bg-elevated: #1C212B;
+  /* Backgrounds — Pure blacks */
+  --bg-void: #000;
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #111;
+  --bg-tertiary: #181818;
+  --bg-elevated: #1e1e1e;
 
   /* Borders & Dividers */
-  --border-subtle: #1E2530;
-  --border-default: #2A3241;
-  --border-strong: #3D4759;
+  --border-subtle: #1a1a1a;
+  --border-default: #262626;
+  --border-strong: #333;
 
   /* Text Hierarchy */
-  --text-primary: #F0F2F5;
-  --text-secondary: #9BA3B0;
-  --text-tertiary: #5C6370;
-  --text-inverse: #0A0C10;
+  --text-primary: #fff;
+  --text-secondary: #888;
+  --text-tertiary: #555;
+  --text-inverse: #000;
 
-  /* Accent — Kaspa Teal (Primary Action) */
-  --accent-primary: #49EACB;
-  --accent-primary-dim: #49EACB40;
-  --accent-primary-muted: #49EACB20;
-  --accent-primary-bright: #7FFFD4;
+  /* Accent — White (Primary Action) */
+  --accent-primary: #ffffff;
 
-  /* Accent — Electric Blue (Secondary) */
-  --accent-secondary: #4A9EFF;
-  --accent-secondary-dim: #4A9EFF30;
+  /* Accent — Kaspa Teal (Blockchain data, doc links, confirmed status) */
+  --accent-kaspa: #49EACB;
 
   /* Semantic Colors */
   --status-success: #34D399;
@@ -47,14 +43,8 @@
   --thermo-hot: #EC4899;
   --thermo-secure: #49EACB;
 
-  /* Special Effects */
-  --glow-kaspa: 0 0 20px #49EACB40, 0 0 40px #49EACB20;
-  --glow-active: 0 0 10px #49EACB60;
-  --glow-dramatic: 0 0 60px #49EACB30, 0 0 120px #49EACB10;
-  --glow-thermo: 0 0 30px #EC489940, 0 0 60px #8B5CF620;
-
   /* Typography */
-  --font-display: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+  --font-display: 'Inter', 'SF Pro Display', -apple-system, sans-serif;
   --font-interface: 'Inter', 'SF Pro Display', -apple-system, sans-serif;
   --font-data: 'JetBrains Mono', 'IBM Plex Mono', monospace;
 
@@ -213,10 +203,10 @@ body {
 
 .text-hero {
   font-family: var(--font-display);
-  font-size: 72px;
+  font-size: 80px;
   font-weight: 700;
   line-height: 1.0;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.04em;
 }
 
 .text-micro {
@@ -232,7 +222,7 @@ body {
    ============================================ */
 
 *:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--text-secondary);
   outline-offset: 2px;
   border-radius: 2px;
 }
@@ -264,24 +254,13 @@ body {
    ============================================ */
 
 ::selection {
-  background: var(--accent-primary-dim);
+  background: rgba(255,255,255,0.2);
   color: var(--text-primary);
 }
 
 /* ============================================
    Animations
    ============================================ */
-
-@keyframes pulse-glow {
-  0%, 100% {
-    opacity: 1;
-    box-shadow: var(--glow-active);
-  }
-  50% {
-    opacity: 0.7;
-    box-shadow: none;
-  }
-}
 
 @keyframes shimmer {
   0% {
@@ -299,10 +278,6 @@ body {
   50% {
     opacity: 0.5;
   }
-}
-
-.animate-pulse-glow {
-  animation: pulse-glow 2s ease-in-out infinite;
 }
 
 .animate-shimmer {
@@ -323,7 +298,7 @@ body {
 /* Confirmation reveal animations */
 @keyframes confirmation-flash {
   0% { background-color: var(--bg-void); }
-  50% { background-color: var(--accent-primary); }
+  50% { background-color: rgba(255,255,255,0.05); }
   100% { background-color: var(--bg-void); }
 }
 
@@ -360,15 +335,6 @@ body {
   }
 }
 
-@keyframes glow-pulse {
-  0%, 100% {
-    box-shadow: var(--glow-thermo);
-  }
-  50% {
-    box-shadow: 0 0 40px #EC489960, 0 0 80px #8B5CF640;
-  }
-}
-
 .animate-confirmation-flash {
   animation: confirmation-flash 0.3s ease-out;
 }
@@ -386,10 +352,6 @@ body {
   transform-origin: left;
 }
 
-.animate-glow-pulse {
-  animation: glow-pulse 2s ease-in-out infinite;
-}
-
 /* ============================================
    Utility Classes
    ============================================ */
@@ -399,14 +361,6 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.glow-kaspa {
-  box-shadow: var(--glow-kaspa);
-}
-
-.glow-active {
-  box-shadow: var(--glow-active);
 }
 
 /* Thermodynamic gradient for progress bars */
@@ -475,14 +429,14 @@ body {
 }
 
 .docs-content a {
-  color: var(--accent-primary);
+  color: var(--accent-kaspa);
   text-decoration: none;
   border-bottom: 1px solid transparent;
   transition: border-color 0.2s;
 }
 
 .docs-content a:hover {
-  border-bottom-color: var(--accent-primary);
+  border-bottom-color: var(--accent-kaspa);
 }
 
 .docs-content ul,
@@ -505,7 +459,7 @@ body {
   font-family: var(--font-data);
   font-size: 13px;
   background: var(--bg-tertiary);
-  color: var(--accent-primary);
+  color: var(--accent-kaspa);
   padding: 2px 6px;
   border-radius: 4px;
   border: 1px solid var(--border-subtle);
@@ -568,7 +522,7 @@ body {
   margin: 0 0 20px 0;
   padding: 14px 20px;
   background: var(--bg-tertiary);
-  border-left: 3px solid var(--accent-primary);
+  border-left: 3px solid var(--accent-kaspa);
   border-radius: 0 6px 6px 0;
   color: var(--text-secondary);
 }
@@ -582,7 +536,7 @@ body {
 }
 
 .docs-content blockquote strong {
-  color: var(--accent-primary);
+  color: var(--accent-kaspa);
 }
 
 /* Horizontal rules */
@@ -601,6 +555,6 @@ body {
 
 /* Checkboxes in lists */
 .docs-content input[type="checkbox"] {
-  accent-color: var(--accent-primary);
+  accent-color: var(--accent-kaspa);
   margin-right: 8px;
 }

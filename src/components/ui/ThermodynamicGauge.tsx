@@ -41,31 +41,12 @@ function ThermodynamicGauge({
             delay: 0.2,
           }}
         />
-
-        {/* Glow overlay on the hot end */}
-        <motion.div
-          className="absolute inset-y-0 right-0 w-1/3 rounded-r-full"
-          style={{
-            background: 'linear-gradient(90deg, transparent 0%, rgba(236, 72, 153, 0.3) 100%)',
-          }}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: isAnimated ? 1 : 0 }}
-          transition={{ duration: 0.5, delay: 1.2 }}
-        />
-
-        {/* Shine effect */}
-        <div
-          className="absolute inset-0 rounded-full"
-          style={{
-            background: 'linear-gradient(180deg, rgba(255,255,255,0.1) 0%, transparent 50%, rgba(0,0,0,0.1) 100%)',
-          }}
-        />
       </div>
 
       {/* Labels */}
       <div className="flex justify-between items-center mt-3">
         <div className="flex items-baseline gap-2">
-          <span className={`font-data ${valueText} font-semibold text-[var(--accent-primary)]`}>
+          <span className={`font-data ${valueText} font-semibold text-[var(--text-primary)]`}>
             {blueWork}
           </span>
           <span className={`${text} text-[var(--text-tertiary)]`}>blue work</span>

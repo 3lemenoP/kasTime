@@ -1,25 +1,16 @@
 import { Outlet, NavLink } from 'react-router-dom'
-import { Clock } from 'lucide-react'
 
 function Layout() {
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <header className="border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)]">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+      <header className="border-b border-[var(--border-subtle)]">
+        <div className="max-w-[1400px] mx-auto px-6 h-16 flex items-center justify-between">
           {/* Logo */}
-          <NavLink to="/" className="flex items-center gap-3 group">
-            <div className="w-8 h-8 rounded bg-[var(--accent-primary)] flex items-center justify-center">
-              <Clock className="w-5 h-5 text-[var(--text-inverse)]" />
-            </div>
-            <div>
-              <div className="font-display text-sm font-semibold tracking-wider text-[var(--text-primary)] group-hover:text-[var(--accent-primary)] transition-colors">
-                KTCS
-              </div>
-              <div className="text-[10px] text-[var(--text-tertiary)] tracking-wide">
-                Kaspa Thermodynamic Clock
-              </div>
-            </div>
+          <NavLink to="/" className="flex items-center group">
+            <span className="text-lg font-bold tracking-widest text-white">
+              KTCS
+            </span>
           </NavLink>
 
           {/* Navigation */}
@@ -30,8 +21,8 @@ function Layout() {
               className={({ isActive }) =>
                 `px-4 py-2 text-sm font-medium tracking-wide transition-colors ${
                   isActive
-                    ? 'text-[var(--accent-primary)]'
-                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                    ? 'text-white'
+                    : 'text-[var(--text-secondary)] hover:text-white'
                 }`
               }
             >
@@ -42,8 +33,8 @@ function Layout() {
               className={({ isActive }) =>
                 `px-4 py-2 text-sm font-medium tracking-wide transition-colors ${
                   isActive
-                    ? 'text-[var(--accent-primary)]'
-                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                    ? 'text-white'
+                    : 'text-[var(--text-secondary)] hover:text-white'
                 }`
               }
             >
@@ -54,8 +45,8 @@ function Layout() {
               className={({ isActive }) =>
                 `px-4 py-2 text-sm font-medium tracking-wide transition-colors ${
                   isActive
-                    ? 'text-[var(--accent-primary)]'
-                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                    ? 'text-white'
+                    : 'text-[var(--text-secondary)] hover:text-white'
                 }`
               }
             >
@@ -71,9 +62,12 @@ function Layout() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-[var(--border-subtle)] bg-[var(--bg-secondary)] py-4">
-        <div className="max-w-7xl mx-auto px-6 flex items-center justify-between text-xs text-[var(--text-tertiary)]">
-          <div>KTCS v0.1.0</div>
+      <footer className="border-t border-[var(--border-subtle)] py-6">
+        <div className="max-w-[1400px] mx-auto px-6 flex items-center justify-between text-xs text-[var(--text-tertiary)]">
+          <div className="flex items-center gap-4">
+            <span className="font-medium text-[var(--text-secondary)]">KTCS</span>
+            <span>v0.1.0</span>
+          </div>
           <div>Powered by Kaspa</div>
         </div>
       </footer>

@@ -127,9 +127,8 @@ function VerifyPage(): JSX.Element {
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
       >
-        <h1 className="text-display-xl font-display tracking-tight mb-3">
-          <span className="text-[var(--text-primary)]">VER</span>
-          <span className="text-[var(--accent-primary)]">IFY</span>
+        <h1 className="text-display-xl font-display tracking-tight mb-3 text-white">
+          VERIFY
         </h1>
         <p className="text-body-lg text-[var(--text-secondary)]">
           Validate a timestamp proof independently
@@ -155,7 +154,7 @@ function VerifyPage(): JSX.Element {
             >
               {/* Result Banner */}
               <div
-                className={`rounded-lg p-8 text-center ${
+                className={`rounded-sm p-8 text-center ${
                   result.valid
                     ? 'bg-[var(--status-success)]/10 border border-[var(--status-success)]/30'
                     : 'bg-[var(--status-error)]/10 border border-[var(--status-error)]/30'
@@ -193,7 +192,7 @@ function VerifyPage(): JSX.Element {
               {/* Details */}
               {result.valid && (
                 <motion.div
-                  className="mt-6 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg p-6 space-y-4"
+                  className="mt-6 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-sm p-6 space-y-4"
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.2 }}
@@ -201,7 +200,7 @@ function VerifyPage(): JSX.Element {
                   {result.digest && (
                     <div>
                       <div className="text-label mb-1">DOCUMENT DIGEST</div>
-                      <code className="font-data text-sm text-[var(--accent-primary)] break-all">
+                      <code className="font-data text-sm text-[var(--accent-kaspa)] break-all">
                         {truncateHash(result.digest)}
                       </code>
                     </div>
@@ -216,7 +215,7 @@ function VerifyPage(): JSX.Element {
                             key={idx}
                             className="flex items-center gap-2 text-sm text-[var(--text-secondary)]"
                           >
-                            <span className="px-2 py-0.5 rounded text-xs font-medium bg-[var(--accent-primary-muted)] text-[var(--accent-primary)]">
+                            <span className="px-2 py-0.5 rounded-sm text-xs font-medium bg-[var(--bg-tertiary)] text-white border border-[var(--border-default)]">
                               {att.attestationType}
                             </span>
                             {att.complete && att.blockHash && (
@@ -329,7 +328,7 @@ function VerifyPage(): JSX.Element {
               <div>
                 <div className="text-label mb-3">PROOF FILE (.kts)</div>
                 {proofFile ? (
-                  <div className="flex items-center gap-3 p-4 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg">
+                  <div className="flex items-center gap-3 p-4 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-sm">
                     <FileCheck className="w-5 h-5 text-[var(--status-success)]" />
                     <span className="font-data text-sm text-[var(--text-primary)] flex-1">
                       {proofFile.name}
@@ -360,7 +359,7 @@ function VerifyPage(): JSX.Element {
                   <span className="text-[var(--text-tertiary)] font-normal">(optional)</span>
                 </div>
                 {originalFile ? (
-                  <div className="flex items-center gap-3 p-4 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-lg">
+                  <div className="flex items-center gap-3 p-4 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-sm">
                     <FileCheck className="w-5 h-5 text-[var(--status-success)]" />
                     <span className="font-data text-sm text-[var(--text-primary)] flex-1">
                       {originalFile.name}
@@ -404,7 +403,7 @@ function VerifyPage(): JSX.Element {
                 <motion.div
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="p-4 rounded-lg bg-[var(--status-error)]/10 border border-[var(--status-error)]/30"
+                  className="p-4 rounded-sm bg-[var(--status-error)]/10 border border-[var(--status-error)]/30"
                 >
                   <div className="flex items-center gap-2">
                     <XCircle className="w-5 h-5 text-[var(--status-error)]" />

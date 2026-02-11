@@ -1,7 +1,7 @@
 import { useParams, Link } from 'react-router-dom'
 import { useEffect, useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Download, Share2, ExternalLink, Loader2, Wifi, WifiOff } from 'lucide-react'
+import { Download, Share2, ExternalLink } from 'lucide-react'
 import Button from '../components/ui/Button'
 import ConfirmationHero from '../components/proof/ConfirmationHero'
 import BlockAttestation from '../components/proof/BlockAttestation'
@@ -154,9 +154,8 @@ function ProofPage(): JSX.Element {
   if (isDirectMode && !response) {
     return (
       <div className="min-h-[80vh] flex flex-col items-center justify-center px-6 py-12 text-center">
-        <h1 className="text-display-lg font-display mb-4">
-          <span className="text-[var(--text-primary)]">PROOF </span>
-          <span className="text-[var(--accent-primary)]">NOT FOUND</span>
+        <h1 className="text-display-lg font-display mb-4 text-white">
+          PROOF NOT FOUND
         </h1>
         <p className="text-body-lg text-[var(--text-secondary)] mb-8 max-w-md">
           No direct stamp proof found. The proof data may have been cleared.
@@ -203,60 +202,53 @@ function ProofPage(): JSX.Element {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            {/* Subtle grid pattern */}
-            <div
-              className="absolute inset-0 opacity-[0.02]"
-              style={{
-                backgroundImage: `
-                  linear-gradient(var(--text-primary) 1px, transparent 1px),
-                  linear-gradient(90deg, var(--text-primary) 1px, transparent 1px)
-                `,
-                backgroundSize: '40px 40px',
-              }}
-            />
+            <div className="text-center">
+              {/* Minimal loading bar */}
+              <div className="w-16 h-px bg-[var(--border-default)] mx-auto mb-16 overflow-hidden">
+                <motion.div
+                  className="h-full bg-white"
+                  animate={{ x: ['-100%', '100%'] }}
+                  transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+                  style={{ width: '50%' }}
+                />
+              </div>
 
-            <div className="relative z-10 text-center">
               <motion.h1
-                className="text-display-xl font-display text-[var(--text-primary)] mb-2"
-                animate={{ opacity: [0.5, 1, 0.5] }}
-                transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+                className="text-hero font-display text-white mb-4"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.6 }}
               >
                 AWAITING
               </motion.h1>
-              <motion.h2
-                className="text-display-lg font-display text-[var(--accent-primary)] mb-12"
-                animate={{ opacity: [0.7, 1, 0.7] }}
-                transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut', delay: 0.2 }}
+              <motion.p
+                className="text-body-lg text-[var(--text-tertiary)] mb-16"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.6, delay: 0.15 }}
               >
-                CONFIRMATION
-              </motion.h2>
+                Confirmation typically takes 1-10 seconds
+              </motion.p>
 
+              {/* Connection status */}
               <motion.div
-                className="mb-8"
-                animate={{ rotate: 360 }}
-                transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}
+                className="flex items-center justify-center gap-2"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.3 }}
               >
-                <Loader2 className="w-12 h-12 text-[var(--accent-primary)]" />
-              </motion.div>
-
-              <p className="text-body-lg text-[var(--text-secondary)] mb-2">
-                Kaspa confirmation typically takes 1-10 seconds
-              </p>
-
-              {/* WebSocket indicator */}
-              <div className="flex items-center justify-center gap-2 mt-6">
                 {wsConnected ? (
                   <>
-                    <Wifi className="w-4 h-4 text-[var(--status-success)]" />
-                    <span className="text-sm text-[var(--text-tertiary)]">Real-time updates active</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--status-success)] animate-live-pulse" />
+                    <span className="text-xs text-[var(--text-tertiary)] tracking-wide uppercase">Live</span>
                   </>
                 ) : (
                   <>
-                    <WifiOff className="w-4 h-4 text-[var(--text-tertiary)]" />
-                    <span className="text-sm text-[var(--text-tertiary)]">Polling for updates</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-tertiary)]" />
+                    <span className="text-xs text-[var(--text-tertiary)] tracking-wide uppercase">Polling</span>
                   </>
                 )}
-              </div>
+              </motion.div>
             </div>
           </motion.div>
         ) : (
@@ -330,7 +322,7 @@ function ProofPage(): JSX.Element {
       {/* Error Display */}
       {error && (
         <motion.div
-          className="fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-lg bg-[var(--status-error)]/20 border border-[var(--status-error)]/40"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-sm bg-[var(--status-error)]/20 border border-[var(--status-error)]/40"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
         >
