@@ -22,7 +22,10 @@ ktcs-calendar/.env
 .idea/
 
 # Docs & misc
-docs/
-*.md
 mkdocs.yml
+# Exclude root-level markdown but keep docs/ for frontend DocsPage
+README.md
+CONTRIBUTING.md
+CHANGELOG.md
+LICENSE.md
 nul
