@@ -333,7 +333,7 @@ async fn test_mainnet_check_balance() {
     client.disconnect().await.ok();
 }
 
-/// Submit a test OP_RETURN transaction to mainnet
+/// Submit a test commitment transaction to mainnet
 /// Run: cargo test --package ktcs-core --test mainnet_integration test_mainnet_stamp_transaction --features kaspa-client -- --ignored --nocapture
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]

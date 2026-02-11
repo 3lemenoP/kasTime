@@ -108,7 +108,6 @@ pub async fn prepare_direct_stamp(
         .add_inputs(selected_utxos.clone())
         .change_address(wallet.address())
         .fee_per_gram(config.fee_rate)
-        .include_magic(false)
         .build()?;
 
     // 5. Store transaction and fee info

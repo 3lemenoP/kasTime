@@ -87,7 +87,7 @@ pub use tx_builder::{
     address_to_script as build_address_script, create_commitment as build_commitment,
     select_utxos as select_utxos_for_tx, CommitmentTransaction, TransactionBuilder,
     TransferTransaction, TransferTransactionBuilder, DEFAULT_FEE_PER_GRAM, DUST_THRESHOLD,
-    KTCS_MAGIC_PREFIX, MAX_OP_RETURN_SIZE, MIN_FEE_PER_GRAM,
+    MIN_FEE_PER_GRAM,
 };
 
 // Kaspa client re-exports (feature-gated)

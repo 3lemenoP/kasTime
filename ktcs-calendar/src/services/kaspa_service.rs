@@ -81,8 +81,6 @@ pub struct KaspaServiceConfig {
     pub confirmation_timeout_ms: u64,
     /// Fee rate in sompi per gram
     pub fee_per_gram: u64,
-    /// Include KTCS magic prefix in OP_RETURN
-    pub include_magic: bool,
     /// Calendar wallet private key (hex-encoded, 64 chars) - STAMP wallet
     /// Required when mock_mode is false
     /// Wrapped in Secret for secure memory handling
@@ -114,7 +112,6 @@ impl Default for KaspaServiceConfig {
             wallet_address: String::new(),
             confirmation_timeout_ms: 60_000, // 1 minute
             fee_per_gram: 1,
-            include_magic: false,
             wallet_key: None,
             mock_mode: false, // Disabled by default - real blockchain required
             // Dual-wallet recycling (disabled by default)
@@ -289,11 +286,6 @@ impl KaspaServiceConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
 
-        let include_magic = std::env::var("KTCS_INCLUDE_MAGIC")
-            .ok()
-            .map(|s| s == "true" || s == "1")
-            .unwrap_or(false);
-
         // Load wallet private key from environment
         // SECURITY: Key is wrapped in Secret for secure memory handling
         let wallet_key = std::env::var("CALENDAR_WALLET_KEY")
@@ -354,7 +346,6 @@ impl KaspaServiceConfig {
             wallet_address,
             confirmation_timeout_ms,
             fee_per_gram,
-            include_magic,
             wallet_key,
             mock_mode,
             return_wallet_key,
@@ -648,7 +639,6 @@ impl KaspaService {
             .map_err(|e| KaspaServiceError::SubmissionFailed(e.to_string()))?
             .change_address(change_address)
             .fee_per_gram(self.config.fee_per_gram)
-            .include_magic(self.config.include_magic)
             .build()
             .map_err(|e| KaspaServiceError::SubmissionFailed(e.to_string()))?;
 

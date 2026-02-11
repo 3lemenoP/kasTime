@@ -1,13 +1,13 @@
 //! Transaction building utilities for KTCS
 //!
 //! This module provides utilities for building Kaspa transactions
-//! that contain OP_RETURN commitments for timestamping.
+//! that contain P2PK burn commitments for timestamping.
 //!
 //! # Transaction Structure
 //!
 //! A typical KTCS commitment transaction has:
 //! - One or more inputs (UTXOs from the calendar wallet)
-//! - Output 0: OP_RETURN with 32-byte commitment (Merkle root or direct hash)
+//! - Output 0: P2PK burn output with 32-byte commitment (Merkle root or direct hash)
 //! - Output 1: Change back to the calendar address
 //!
 //! # Example
@@ -37,12 +37,6 @@ pub const MIN_FEE_PER_GRAM: u64 = 1;
 
 /// Default fee rate in sompi per gram
 pub const DEFAULT_FEE_PER_GRAM: u64 = 1;
-
-/// Maximum OP_RETURN data size in bytes
-pub const MAX_OP_RETURN_SIZE: usize = 80;
-
-/// KTCS magic prefix for identifying our OP_RETURN outputs (optional)
-pub const KTCS_MAGIC_PREFIX: &[u8; 4] = b"KTCS";
 
 /// A commitment transaction ready for signing
 #[derive(Debug, Clone)]
@@ -86,7 +80,6 @@ pub struct TransactionBuilder {
     change_address: Option<String>,
     change_script: Option<ScriptPublicKey>,
     fee_per_gram: u64,
-    include_ktcs_magic: bool,
 }
 
 impl TransactionBuilder {
@@ -98,7 +91,6 @@ impl TransactionBuilder {
             change_address: None,
             change_script: None,
             fee_per_gram: DEFAULT_FEE_PER_GRAM,
-            include_ktcs_magic: false,
         }
     }
 
@@ -137,16 +129,6 @@ impl TransactionBuilder {
     /// Set the fee rate in sompi per gram (mass unit)
     pub fn fee_per_gram(mut self, fee: u64) -> Self {
         self.fee_per_gram = fee.max(MIN_FEE_PER_GRAM);
-        self
-    }
-
-    /// Include the KTCS magic prefix in the OP_RETURN
-    ///
-    /// When enabled, the OP_RETURN will contain "KTCS" + commitment
-    /// instead of just the commitment. This makes KTCS transactions
-    /// easily identifiable but uses 4 more bytes.
-    pub fn include_magic(mut self, include: bool) -> Self {
-        self.include_ktcs_magic = include;
         self
     }
 
@@ -202,7 +184,6 @@ impl TransactionBuilder {
         let estimated_mass = estimate_transaction_mass(
             self.inputs.len(),
             2, // commitment output + change
-            false, // No magic prefix
         );
 
         let fee = estimated_mass * self.fee_per_gram;
@@ -259,39 +240,17 @@ impl Default for TransactionBuilder {
 ///
 /// Kaspa uses "mass" as a measure of transaction resource consumption.
 /// Mass is roughly: base_mass + input_mass * num_inputs + output_mass * num_outputs
-fn estimate_transaction_mass(num_inputs: usize, num_outputs: usize, with_magic: bool) -> u64 {
+fn estimate_transaction_mass(num_inputs: usize, num_outputs: usize) -> u64 {
     // Approximate mass values (these should match Kaspa consensus rules)
     const BASE_MASS: u64 = 10;
     const INPUT_MASS: u64 = 148; // Typical P2PKH input
     const OUTPUT_MASS: u64 = 34; // Typical P2PKH output
-    const OP_RETURN_BASE_MASS: u64 = 10;
-    const OP_RETURN_DATA_MASS_PER_BYTE: u64 = 1;
+    const COMMITMENT_OUTPUT_MASS: u64 = 42; // P2PK commitment output (34 bytes script + overhead)
 
     let input_total = INPUT_MASS * num_inputs as u64;
-    let output_total = OUTPUT_MASS * (num_outputs - 1) as u64; // Exclude OP_RETURN
+    let output_total = OUTPUT_MASS * (num_outputs - 1) as u64; // Exclude commitment output
 
-    let op_return_data_size = if with_magic { 36 } else { 32 }; // 32 bytes + optional 4-byte magic
-    let op_return_mass = OP_RETURN_BASE_MASS + OP_RETURN_DATA_MASS_PER_BYTE * op_return_data_size;
-
-    BASE_MASS + input_total + output_total + op_return_mass
-}
-
-/// Build an OP_RETURN output with KTCS magic prefix
-fn build_op_return_with_magic(commitment: &[u8; 32]) -> TransactionOutput {
-    // Script: OP_RETURN <push 36 bytes> "KTCS" <32-byte commitment>
-    let mut script = Vec::with_capacity(38);
-    script.push(0x6a); // OP_RETURN
-    script.push(0x24); // Push 36 bytes (4 + 32)
-    script.extend_from_slice(KTCS_MAGIC_PREFIX);
-    script.extend_from_slice(commitment);
-
-    TransactionOutput {
-        amount: 0,
-        script_public_key: ScriptPublicKey {
-            version: 0,
-            script,
-        },
-    }
+    BASE_MASS + input_total + output_total + COMMITMENT_OUTPUT_MASS
 }
 
 /// Convert a Kaspa address to a script public key
@@ -384,7 +343,7 @@ pub fn select_utxos(
         total += utxo.amount;
 
         // Estimate fee with current selection
-        let estimated_mass = estimate_transaction_mass(selected.len(), 2, false);
+        let estimated_mass = estimate_transaction_mass(selected.len(), 2);
         let estimated_fee = estimated_mass * fee_per_gram;
 
         if total >= target_amount + estimated_fee {
@@ -393,7 +352,7 @@ pub fn select_utxos(
     }
 
     // Calculate what we needed
-    let final_mass = estimate_transaction_mass(selected.len(), 2, false);
+    let final_mass = estimate_transaction_mass(selected.len(), 2);
     let final_fee = final_mass * fee_per_gram;
     let needed = target_amount + final_fee;
 
@@ -439,7 +398,7 @@ pub fn generate_nonce() -> Result<[u8; 16]> {
 // Transfer Transaction Builder (for dual-wallet recycling)
 // =============================================================================
 
-/// A simple transfer transaction (no OP_RETURN commitment)
+/// A simple transfer transaction (no commitment output)
 ///
 /// Used for recycling funds from RETURN wallet back to STAMP wallet.
 #[derive(Debug, Clone)]
@@ -454,7 +413,7 @@ pub struct TransferTransaction {
     pub fee: u64,
 }
 
-/// Builder for creating simple transfer transactions (no OP_RETURN)
+/// Builder for creating simple transfer transactions (no commitment output)
 ///
 /// Used for wallet recycling - sends all funds from one wallet to another.
 ///
@@ -587,7 +546,7 @@ impl Default for TransferTransactionBuilder {
     }
 }
 
-/// Estimate transaction mass for a simple transfer (no OP_RETURN)
+/// Estimate transaction mass for a simple transfer (no commitment output)
 fn estimate_transfer_mass(num_inputs: usize) -> u64 {
     const BASE_MASS: u64 = 10;
     const INPUT_MASS: u64 = 148;
@@ -693,21 +652,6 @@ mod tests {
     }
 
     #[test]
-    fn test_op_return_with_magic() {
-        let commitment = [0xcd; 32];
-        let output = build_op_return_with_magic(&commitment);
-
-        assert_eq!(output.amount, 0);
-        assert!(output.script_public_key.is_op_return());
-
-        let script = &output.script_public_key.script;
-        assert_eq!(script[0], 0x6a); // OP_RETURN
-        assert_eq!(script[1], 0x24); // Push 36 bytes
-        assert_eq!(&script[2..6], b"KTCS");
-        assert_eq!(&script[6..38], &commitment[..]);
-    }
-
-    #[test]
     fn test_select_utxos() {
         let utxos = vec![
             create_test_utxo(1_000_000, 0),
@@ -782,16 +726,12 @@ mod tests {
     #[test]
     fn test_estimate_transaction_mass() {
         // Basic transaction: 1 input, 2 outputs
-        let mass = estimate_transaction_mass(1, 2, false);
+        let mass = estimate_transaction_mass(1, 2);
         assert!(mass > 0);
 
         // More inputs = more mass
-        let mass2 = estimate_transaction_mass(3, 2, false);
+        let mass2 = estimate_transaction_mass(3, 2);
         assert!(mass2 > mass);
-
-        // With magic = slightly more mass
-        let mass3 = estimate_transaction_mass(1, 2, true);
-        assert!(mass3 > mass);
     }
 
     #[cfg(feature = "keygen")]

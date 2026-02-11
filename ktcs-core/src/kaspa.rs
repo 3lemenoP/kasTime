@@ -3,7 +3,7 @@
 //! This module provides a client for interacting with Kaspa nodes via the wRPC/JSON-RPC API.
 //! It enables:
 //! - Fetching block and transaction information
-//! - Submitting OP_RETURN transactions for timestamping
+//! - Submitting commitment transactions for timestamping
 //! - Subscribing to block notifications for real-time confirmations
 //! - Querying current chain state (DAA score, blue work, etc.)
 
@@ -1524,63 +1524,11 @@ impl KaspaClient {
 // Transaction Building Utilities
 // ========================================
 
-// Note: build_commitment_output is imported from kaspa_types
-
-/// Build an OP_RETURN output for a 32-byte commitment (DEPRECATED)
-///
-/// NOTE: Kaspa does NOT support OP_RETURN as a standard script type.
-/// This function is kept for compatibility but will be rejected by the network.
-/// Use `build_commitment_output` instead.
-#[deprecated(since = "0.1.0", note = "Kaspa does not support OP_RETURN. Use build_commitment_output instead.")]
-pub fn build_op_return_output(commitment: &[u8; 32]) -> TransactionOutput {
-    // OP_RETURN script: 0x6a (OP_RETURN) 0x20 (push 32 bytes) <32 bytes>
-    let mut script = Vec::with_capacity(34);
-    script.push(0x6a); // OP_RETURN
-    script.push(0x20); // Push 32 bytes
-    script.extend_from_slice(commitment);
-
-    TransactionOutput {
-        amount: 0, // OP_RETURN outputs have 0 value
-        script_public_key: ScriptPublicKey {
-            version: 0,
-            script,
-        },
-    }
-}
-
-/// Extract commitment from a transaction if it contains an OP_RETURN
-pub fn extract_commitment_from_tx(tx: &TransactionInfo) -> Option<[u8; 32]> {
-    for output in &tx.outputs {
-        if let Some(data) = output.script_public_key.get_op_return_data() {
-            if data.len() == 32 {
-                let mut commitment = [0u8; 32];
-                commitment.copy_from_slice(&data);
-                return Some(commitment);
-            }
-        }
-    }
-    None
-}
-
 /// Calculate transaction fee given inputs and outputs
 pub fn calculate_fee(inputs: &[Utxo], outputs: &[TransactionOutput]) -> i64 {
     let input_sum: u64 = inputs.iter().map(|u| u.amount).sum();
     let output_sum: u64 = outputs.iter().map(|o| o.amount).sum();
     input_sum as i64 - output_sum as i64
-}
-
-/// Estimate transaction size for fee calculation
-///
-/// Approximate sizes:
-/// - Base: 10 bytes
-/// - Input: ~148 bytes (P2PKH)
-/// - Output: ~34 bytes (P2PKH) or ~43 bytes (OP_RETURN with 32 bytes)
-pub fn estimate_tx_size(num_inputs: usize, num_outputs: usize, has_op_return: bool) -> usize {
-    let base = 10;
-    let inputs = num_inputs * 148;
-    let outputs = num_outputs * 34;
-    let op_return = if has_op_return { 43 } else { 0 };
-    base + inputs + outputs + op_return
 }
 
 // ========================================
@@ -1684,42 +1632,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_op_return_script() {
-        let commitment = [0xab; 32];
-        let output = build_op_return_output(&commitment);
-
-        assert!(output.script_public_key.is_op_return());
-        assert_eq!(output.amount, 0);
-
-        let extracted = output.script_public_key.get_op_return_data().unwrap();
-        assert_eq!(extracted, commitment.to_vec());
-    }
-
-    #[test]
-    fn test_extract_commitment_from_tx() {
-        let commitment = [0xcd; 32];
-        let tx = TransactionInfo {
-            hash: [0x11; 32],
-            block_hash: Some([0x22; 32]),
-            outputs: vec![
-                TransactionOutput {
-                    amount: 1000,
-                    script_public_key: ScriptPublicKey {
-                        version: 0,
-                        script: vec![0x76, 0xa9], // Not OP_RETURN
-                    },
-                },
-                build_op_return_output(&commitment),
-            ],
-            inputs: vec![],
-            is_accepted: true,
-        };
-
-        let extracted = extract_commitment_from_tx(&tx);
-        assert_eq!(extracted, Some(commitment));
-    }
-
-    #[test]
     fn test_subtract_blue_work() {
         // Simple case: 100 - 50 = 50
         let mut a = [0u8; 32];
@@ -1796,13 +1708,6 @@ mod tests {
         assert_eq!(compare_blue_work(&a, &b), std::cmp::Ordering::Less);
         assert_eq!(compare_blue_work(&b, &a), std::cmp::Ordering::Greater);
         assert_eq!(compare_blue_work(&a, &a), std::cmp::Ordering::Equal);
-    }
-
-    #[test]
-    fn test_estimate_tx_size() {
-        // 1 input, 2 outputs (change + OP_RETURN)
-        let size = estimate_tx_size(1, 1, true);
-        assert!(size > 200); // Should be around 235 bytes
     }
 
     #[tokio::test]

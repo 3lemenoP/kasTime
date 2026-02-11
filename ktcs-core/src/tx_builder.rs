@@ -9,8 +9,6 @@
 //! - One or more inputs (UTXOs from the wallet)
 //! - Output 0: P2PK burn output with 32-byte commitment (burns 0.2 KAS)
 //! - Output 1: Change back to the wallet address
-//!
-//! Note: Kaspa does NOT support OP_RETURN. We use P2PK burn outputs instead.
 
 use std::collections::HashSet;
 
@@ -30,12 +28,6 @@ pub const MIN_FEE_PER_GRAM: u64 = 1;
 
 /// Default fee rate in sompi per gram
 pub const DEFAULT_FEE_PER_GRAM: u64 = 1;
-
-/// Maximum OP_RETURN data size in bytes
-pub const MAX_OP_RETURN_SIZE: usize = 80;
-
-/// KTCS magic prefix for identifying our outputs (optional)
-pub const KTCS_MAGIC_PREFIX: &[u8; 4] = b"KTCS";
 
 /// A commitment transaction ready for signing
 #[derive(Debug, Clone)]
@@ -78,8 +70,6 @@ pub struct TransactionBuilder {
     change_address: Option<String>,
     change_script: Option<ScriptPublicKey>,
     fee_per_gram: u64,
-    #[allow(dead_code)]
-    include_ktcs_magic: bool,
     /// Tracks seen outpoints to prevent duplicate UTXOs
     seen_outpoints: HashSet<([u8; 32], u32)>,
 }
@@ -93,7 +83,6 @@ impl TransactionBuilder {
             change_address: None,
             change_script: None,
             fee_per_gram: DEFAULT_FEE_PER_GRAM,
-            include_ktcs_magic: false,
             seen_outpoints: HashSet::new(),
         }
     }
@@ -157,15 +146,6 @@ impl TransactionBuilder {
     /// Set the fee rate in sompi per gram (mass unit)
     pub fn fee_per_gram(mut self, fee: u64) -> Self {
         self.fee_per_gram = fee.max(MIN_FEE_PER_GRAM);
-        self
-    }
-
-    /// Include the KTCS magic prefix in the output (reserved for future use)
-    ///
-    /// Note: Currently a no-op as Kaspa uses P2PK burn outputs which don't
-    /// support additional data. This method exists for API compatibility.
-    pub fn include_magic(mut self, include: bool) -> Self {
-        self.include_ktcs_magic = include;
         self
     }
 

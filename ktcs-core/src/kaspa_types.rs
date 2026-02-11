@@ -53,7 +53,7 @@ pub struct TransactionInfo {
 pub struct TransactionOutput {
     /// Output amount in sompi (1 KAS = 100,000,000 sompi)
     pub amount: u64,
-    /// Script public key (for P2PKH/P2SH or OP_RETURN)
+    /// Script public key (for P2PKH/P2SH/P2PK)
     pub script_public_key: ScriptPublicKey,
 }
 
@@ -78,28 +78,6 @@ pub struct ScriptPublicKey {
 }
 
 impl ScriptPublicKey {
-    /// Check if this is an OP_RETURN output
-    pub fn is_op_return(&self) -> bool {
-        // OP_RETURN is 0x6a
-        !self.script.is_empty() && self.script[0] == 0x6a
-    }
-
-    /// Extract OP_RETURN data if present
-    pub fn get_op_return_data(&self) -> Option<Vec<u8>> {
-        if !self.is_op_return() || self.script.len() < 2 {
-            return None;
-        }
-
-        // Format: OP_RETURN <push_opcode> <data>
-        // For 32-byte commitments: 0x6a 0x20 <32 bytes>
-        let push_len = self.script[1] as usize;
-        if self.script.len() >= 2 + push_len {
-            Some(self.script[2..2 + push_len].to_vec())
-        } else {
-            None
-        }
-    }
-
     /// Check if this is a P2PK script
     pub fn is_p2pk(&self) -> bool {
         // P2PK format: <push N bytes> <N-byte pubkey> OP_CHECKSIG (0xac)
