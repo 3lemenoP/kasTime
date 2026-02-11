@@ -162,7 +162,7 @@ For cross-chain anchoring to Bitcoin (optional, for long-term archival).
 
 ## On-Chain Commitment Format
 
-**IMPORTANT**: Kaspa does NOT support OP_RETURN. KTCS uses P2PK burn outputs.
+KTCS uses P2PK burn outputs for on-chain commitments.
 
 ### P2PK Commitment Output
 
@@ -283,17 +283,6 @@ VERIFY(proof_bytes, original_data):
     thermodynamic_security: blue_work_accumulated
   }
 ```
-
-## Comparison with OpenTimestamps
-
-| Aspect | OpenTimestamps (.ots) | KTCS (.kts) |
-|--------|----------------------|-------------|
-| Magic bytes | `0x00 "OpenTimestamps" ...` | `0x00 "KaspaTime" ...` |
-| On-chain storage | OP_RETURN | P2PK burn output |
-| Blockchain | Bitcoin/Litecoin | Kaspa |
-| Block time | ~10 minutes | ~100ms |
-| Attestation data | Block height | DAA score, blue work, parent hashes |
-| DAG support | No | Yes (parent hashes) |
 
 ## File Extension
 

@@ -1,9 +1,12 @@
+import { lazy, Suspense } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { ErrorBoundary } from 'react-error-boundary'
 import Layout from './components/Layout'
 import HomePage from './pages/HomePage'
 import VerifyPage from './pages/VerifyPage'
 import ProofPage from './pages/ProofPage'
+
+const DocsPage = lazy(() => import('./pages/DocsPage'))
 
 function ErrorFallback() {
   return (
@@ -22,6 +25,14 @@ function ErrorFallback() {
   )
 }
 
+function DocsLoader() {
+  return (
+    <div className="flex items-center justify-center py-20">
+      <div className="text-[var(--text-tertiary)] text-sm">Loading documentation...</div>
+    </div>
+  )
+}
+
 function App() {
   return (
     <ErrorBoundary FallbackComponent={ErrorFallback}>
@@ -29,6 +40,11 @@ function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<HomePage />} />
           <Route path="verify" element={<VerifyPage />} />
+          <Route path="docs" element={
+            <Suspense fallback={<DocsLoader />}>
+              <DocsPage />
+            </Suspense>
+          } />
           <Route path="proof/:id" element={<ProofPage />} />
         </Route>
       </Routes>

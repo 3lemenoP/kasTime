@@ -49,6 +49,18 @@ function Layout() {
             >
               VERIFY
             </NavLink>
+            <NavLink
+              to="/docs"
+              className={({ isActive }) =>
+                `px-4 py-2 text-sm font-medium tracking-wide transition-colors ${
+                  isActive
+                    ? 'text-[var(--accent-primary)]'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`
+              }
+            >
+              DOCS
+            </NavLink>
           </nav>
         </div>
       </header>

@@ -5,44 +5,40 @@ This document describes the system architecture of the Kaspa Thermodynamic Clock
 ## System Overview
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                              CLIENTS                                      │
-│                                                                          │
-│  ┌─────────┐    ┌─────────────┐    ┌─────────┐    ┌──────────────────┐  │
-│  │   CLI   │    │  Web App    │    │  WASM   │    │ Direct Libraries │  │
-│  │(ktcs-cli)│   │(React/TS)   │    │(Browser)│    │  (Rust/JS SDK)   │  │
-│  └────┬────┘    └──────┬──────┘    └────┬────┘    └────────┬─────────┘  │
-└───────┼────────────────┼────────────────┼──────────────────┼────────────┘
-        │                │                │                  │
-        │   ┌────────────┴────────────────┴──────────────────┘
-        │   │
-        ▼   ▼
-┌───────────────────┐                      ┌────────────────────────────┐
-│  CALENDAR SERVER  │                      │      DIRECT STAMPING       │
-│  (ktcs-calendar)  │                      │                            │
-│                   │                      │  Client builds TX locally  │
-│  • Batch hashes   │                      │  Signs with own wallet     │
-│  • Build Merkle   │                      │  Submits directly to node  │
-│  • Submit TX      │                      │                            │
-│  • Return proofs  │                      │  Higher cost, zero trust   │
-└─────────┬─────────┘                      └─────────────┬──────────────┘
-          │                                              │
-          └──────────────────────┬───────────────────────┘
-                                 │
-                                 ▼
-          ┌──────────────────────────────────────────────────────────────┐
-          │                       KASPA NETWORK                           │
-          │                                                              │
-          │  ┌────────────────────────────────────────────────────────┐  │
-          │  │                    BLOCKDAG (GHOSTDAG)                  │  │
-          │  │                                                         │  │
-          │  │   • 10 blocks per second (100ms target)                 │  │
-          │  │   • P2PK commitment outputs (34-byte scripts)           │  │
-          │  │   • DAA score for height, Blue score for ordering       │  │
-          │  │   • Blue work for thermodynamic security measurement    │  │
-          │  │   • Pruning-safe header chain                           │  │
-          │  └────────────────────────────────────────────────────────┘  │
-          └──────────────────────────────────────────────────────────────┘
+                            CLIENTS
+    +-----------+  +-----------+  +--------+  +------------------+
+    |    CLI    |  |  Web App  |  |  WASM  |  | Direct Libraries |
+    | (ktcs-cli)|  | (React/TS)|  |(Browser)|  |  (Rust/JS SDK)  |
+    +-----+-----+  +-----+-----+  +----+---+  +--------+---------+
+          |               |             |               |
+          +-------+-------+-------------+---------------+
+                  |                     |
+                  v                     v
+    +-------------------+     +------------------------+
+    |  CALENDAR SERVER  |     |    DIRECT STAMPING     |
+    |  (ktcs-calendar)  |     |                        |
+    |                   |     |  Client builds TX      |
+    |  - Batch hashes   |     |  Signs with own wallet |
+    |  - Build Merkle   |     |  Submits to node       |
+    |  - Submit TX      |     |                        |
+    |  - Return proofs  |     |  Higher cost,          |
+    +--------+----------+     |  zero trust            |
+             |                +----------+-------------+
+             |                           |
+             +-------------+-------------+
+                           |
+                           v
+    +--------------------------------------------------+
+    |                  KASPA NETWORK                    |
+    |                                                  |
+    |   BLOCKDAG (GHOSTDAG)                            |
+    |                                                  |
+    |   - 10 blocks per second (100ms target)          |
+    |   - P2PK commitment outputs (34-byte scripts)    |
+    |   - DAA score for height, Blue score for ordering|
+    |   - Cumulative proof-of-work (blue work)         |
+    |   - Pruning-safe header chain                    |
+    +--------------------------------------------------+
 ```
 
 ## Components
@@ -124,112 +120,106 @@ React/TypeScript single-page application with:
 ### Calendar Stamping Flow
 
 ```
-┌─────────┐                     ┌─────────────┐                  ┌───────┐
-│ Client  │                     │  Calendar   │                  │ Kaspa │
-└────┬────┘                     └──────┬──────┘                  └───┬───┘
-     │                                 │                             │
-     │  1. POST /v1/stamp              │                             │
-     │     {digest, batch_mode}        │                             │
-     │ ───────────────────────────────>│                             │
-     │                                 │                             │
-     │  2. pending_proof               │                             │
-     │ <───────────────────────────────│                             │
-     │                                 │                             │
-     │                                 │  3. Batch window expires    │
-     │                                 │     Build Merkle tree       │
-     │                                 │                             │
-     │                                 │  4. Submit P2PK TX          │
-     │                                 │ ──────────────────────────> │
-     │                                 │                             │
-     │                                 │  5. Block confirmation      │
-     │                                 │ <────────────────────────── │
-     │                                 │                             │
-     │  6. WS: confirmed               │                             │
-     │     {proof, block_hash, ...}    │                             │
-     │ <───────────────────────────────│                             │
-     │                                 │                             │
-     │  7. GET /v1/stamp/{id}          │                             │
-     │ ───────────────────────────────>│                             │
-     │                                 │                             │
-     │  8. Complete proof (.kts)       │                             │
-     │ <───────────────────────────────│                             │
-     │                                 │                             │
+  Client                    Calendar                  Kaspa
+    |                          |                        |
+    | 1. POST /v1/stamp        |                        |
+    |    {digest, batch_mode}  |                        |
+    |------------------------->|                        |
+    |                          |                        |
+    | 2. pending_proof         |                        |
+    |<-------------------------|                        |
+    |                          |                        |
+    |                          | 3. Batch window expires|
+    |                          |    Build Merkle tree   |
+    |                          |                        |
+    |                          | 4. Submit P2PK TX      |
+    |                          |----------------------->|
+    |                          |                        |
+    |                          | 5. Block confirmation  |
+    |                          |<-----------------------|
+    |                          |                        |
+    | 6. WS: confirmed         |                        |
+    |    {proof, block_hash}   |                        |
+    |<-------------------------|                        |
+    |                          |                        |
+    | 7. GET /v1/stamp/{id}    |                        |
+    |------------------------->|                        |
+    |                          |                        |
+    | 8. Complete proof (.kts) |                        |
+    |<-------------------------|                        |
+    |                          |                        |
 ```
 
 ### Direct Stamping Flow
 
 ```
-┌─────────┐                                                    ┌───────┐
-│ Client  │                                                    │ Kaspa │
-└────┬────┘                                                    └───┬───┘
-     │                                                             │
-     │  1. Hash document locally                                   │
-     │     digest = SHA256(document)                               │
-     │                                                             │
-     │  2. Generate nonce (16 bytes)                               │
-     │     commitment = SHA256(nonce || digest)                    │
-     │                                                             │
-     │  3. Build P2PK transaction                                  │
-     │     Output 0: 0.2 KAS to P2PK(commitment)                   │
-     │     Output 1: Change to wallet address                      │
-     │                                                             │
-     │  4. Sign transaction with wallet                            │
-     │                                                             │
-     │  5. Submit transaction                                      │
-     │ ──────────────────────────────────────────────────────────> │
-     │                                                             │
-     │  6. Wait for confirmation                                   │
-     │ <────────────────────────────────────────────────────────── │
-     │                                                             │
-     │  7. Build proof locally                                     │
-     │     - digest                                                │
-     │     - Prepend(nonce), SHA256 operations                     │
-     │     - KaspaAttestation with block info                      │
-     │                                                             │
-     │  8. Save .kts proof file                                    │
-     │                                                             │
+  Client                                               Kaspa
+    |                                                    |
+    | 1. Hash document locally                           |
+    |    digest = SHA256(document)                       |
+    |                                                    |
+    | 2. Generate nonce (16 bytes)                       |
+    |    commitment = SHA256(nonce || digest)             |
+    |                                                    |
+    | 3. Build P2PK transaction                          |
+    |    Output 0: 0.2 KAS to P2PK(commitment)           |
+    |    Output 1: Change to wallet address              |
+    |                                                    |
+    | 4. Sign transaction with wallet                    |
+    |                                                    |
+    | 5. Submit transaction                              |
+    |--------------------------------------------------->|
+    |                                                    |
+    | 6. Wait for confirmation                           |
+    |<---------------------------------------------------|
+    |                                                    |
+    | 7. Build proof locally                             |
+    |    - digest                                        |
+    |    - Prepend(nonce), SHA256 operations              |
+    |    - KaspaAttestation with block info              |
+    |                                                    |
+    | 8. Save .kts proof file                            |
+    |                                                    |
 ```
 
 ### Proof Verification Flow
 
 ```
-┌─────────┐
-│Verifier │
-└────┬────┘
-     │
-     │  1. Parse .kts proof file
-     │     - Validate magic bytes
-     │     - Extract digest, operations, attestations
-     │
-     │  2. (Optional) Verify against original data
-     │     - Compute SHA256(original_data)
-     │     - Compare with proof digest
-     │
-     │  3. Compute commitment
-     │     state = digest
-     │     for each operation:
-     │       apply transformation to state
-     │     commitment = state
-     │
-     │  4. Verify attestation
-     │     - Fetch TX from Kaspa node
-     │     - Check P2PK output contains commitment
-     │     - Verify block is in selected chain
-     │
-     │  5. Calculate thermodynamic security
-     │     - Get current blue work
-     │     - accumulated = current - attestation.blue_work
-     │
-     │  RESULT: Valid timestamp at DAA score N
-     │          with X blue work accumulated
-     │
+  Verifier
+    |
+    | 1. Parse .kts proof file
+    |    - Validate magic bytes
+    |    - Extract digest, operations, attestations
+    |
+    | 2. (Optional) Verify against original data
+    |    - Compute SHA256(original_data)
+    |    - Compare with proof digest
+    |
+    | 3. Compute commitment
+    |    state = digest
+    |    for each operation:
+    |      apply transformation to state
+    |    commitment = state
+    |
+    | 4. Verify attestation
+    |    - Fetch TX from Kaspa node
+    |    - Check P2PK output contains commitment
+    |    - Verify block is in selected chain
+    |
+    | 5. Calculate security
+    |    - Get current blue work
+    |    - accumulated = current - attestation.blue_work
+    |
+    | RESULT: Valid timestamp at DAA score N
+    |         with X blue work accumulated
+    |
 ```
 
 ## Commitment Storage
 
 ### P2PK Burn Output
 
-Kaspa does NOT support OP_RETURN. KTCS uses P2PK burn outputs:
+KTCS uses P2PK burn outputs:
 
 ```
 Script: 0x20 <32-byte commitment> 0xac
@@ -264,23 +254,24 @@ if script.len() == 34 && script[0] == 0x20 && script[33] == 0xac {
 The calendar server uses two wallets for sustainable operation:
 
 ```
-┌─────────────────┐         ┌─────────────────┐
-│  STAMP Wallet   │         │  RETURN Wallet  │
-│                 │         │                 │
-│  Receives:      │         │  Receives:      │
-│  - User funding │         │  - TX change    │
-│                 │         │                 │
-│  Sends:         │         │  Sends:         │
-│  - Commitment TX│────────>│  - Recycle to   │
-│  - Change ──────┼─────────┤    STAMP wallet │
-└─────────────────┘         └─────────────────┘
-                                    │
-                                    │ Recycle loop
-                                    │ (when balance > threshold)
-                                    ▼
-                            ┌─────────────────┐
-                            │  STAMP Wallet   │
-                            └─────────────────┘
+  +------------------+           +------------------+
+  |  STAMP Wallet    |           |  RETURN Wallet   |
+  |                  |           |                  |
+  |  Receives:       |           |  Receives:       |
+  |  - User funding  |           |  - TX change     |
+  |                  |           |                  |
+  |  Sends:          |           |  Sends:          |
+  |  - Commitment TX |---------->|  - Recycle to    |
+  |  - Change -------|---------->|    STAMP wallet   |
+  +------------------+           +------------------+
+                                         |
+                                   Recycle loop
+                                 (balance > threshold)
+                                         |
+                                         v
+                                +------------------+
+                                |  STAMP Wallet    |
+                                +------------------+
 ```
 
 This prevents UTXO fragmentation and maintains operational efficiency.
@@ -328,31 +319,31 @@ CREATE INDEX idx_stamps_submitted_at ON stamps(submitted_at);
 ## Security Boundaries
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        TRUST BOUNDARY                                │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                    TRUSTLESS ZONE                            │   │
-│  │                                                              │   │
-│  │  - Proof verification (anyone with a Kaspa node)            │   │
-│  │  - Direct stamping (user controls wallet)                   │   │
-│  │  - Blue work calculation (deterministic from chain)         │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                    CALENDAR ZONE                             │   │
-│  │                                                              │   │
-│  │  Calendar servers CAN:                                       │   │
-│  │  - Delay batching (DoS)                                      │   │
-│  │  - Refuse service                                            │   │
-│  │                                                              │   │
-│  │  Calendar servers CANNOT:                                    │   │
-│  │  - Forge timestamps (requires PoW)                          │   │
-│  │  - Backdate proofs (DAG is immutable)                       │   │
-│  │  - Tamper with proofs (cryptographic binding)               │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+  +-----------------------------------------------------------+
+  |                     TRUST BOUNDARY                        |
+  |                                                           |
+  |  +-----------------------------------------------------+ |
+  |  |                 TRUSTLESS ZONE                       | |
+  |  |                                                     | |
+  |  |  - Proof verification (anyone with a Kaspa node)    | |
+  |  |  - Direct stamping (user controls wallet)           | |
+  |  |  - Blue work calculation (deterministic from chain) | |
+  |  +-----------------------------------------------------+ |
+  |                                                           |
+  |  +-----------------------------------------------------+ |
+  |  |                 CALENDAR ZONE                        | |
+  |  |                                                     | |
+  |  |  Calendar servers CAN:                              | |
+  |  |  - Delay batching (DoS)                             | |
+  |  |  - Refuse service                                   | |
+  |  |                                                     | |
+  |  |  Calendar servers CANNOT:                           | |
+  |  |  - Forge timestamps (requires PoW)                  | |
+  |  |  - Backdate proofs (DAG is immutable)               | |
+  |  |  - Tamper with proofs (cryptographic binding)       | |
+  |  +-----------------------------------------------------+ |
+  |                                                           |
+  +-----------------------------------------------------------+
 ```
 
 ## See Also

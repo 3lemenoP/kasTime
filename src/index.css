@@ -2,7 +2,7 @@
 
 /* ============================================
    KTCS Design System - CSS Variables
-   Based on: Palantir-inspired dark UI
+   KTCS Dark UI Theme
    ============================================ */
 
 :root {
@@ -417,4 +417,190 @@ body {
     var(--thermo-warm) 50%,
     var(--thermo-hot) 100%
   );
+}
+
+/* ============================================
+   Documentation Content Styles
+   ============================================ */
+
+.docs-content {
+  color: var(--text-primary);
+  line-height: 1.7;
+  font-size: 15px;
+}
+
+.docs-content h1 {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 24px 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  letter-spacing: -0.01em;
+}
+
+.docs-content h2 {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 48px 0 16px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.docs-content h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 32px 0 12px 0;
+}
+
+.docs-content h4 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 24px 0 8px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.docs-content p {
+  margin: 0 0 16px 0;
+  color: var(--text-secondary);
+}
+
+.docs-content strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.docs-content a {
+  color: var(--accent-primary);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s;
+}
+
+.docs-content a:hover {
+  border-bottom-color: var(--accent-primary);
+}
+
+.docs-content ul,
+.docs-content ol {
+  margin: 0 0 16px 0;
+  padding-left: 24px;
+  color: var(--text-secondary);
+}
+
+.docs-content li {
+  margin-bottom: 6px;
+}
+
+.docs-content li::marker {
+  color: var(--text-tertiary);
+}
+
+/* Inline code */
+.docs-content code {
+  font-family: var(--font-data);
+  font-size: 13px;
+  background: var(--bg-tertiary);
+  color: var(--accent-primary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+}
+
+/* Code blocks */
+.docs-content pre {
+  margin: 0 0 20px 0;
+  padding: 16px 20px;
+  background: var(--bg-void);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.docs-content pre code {
+  background: none;
+  color: var(--text-secondary);
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* Tables */
+.docs-content table {
+  width: 100%;
+  margin: 0 0 20px 0;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.docs-content thead th {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 2px solid var(--border-default);
+}
+
+.docs-content tbody td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  vertical-align: top;
+}
+
+.docs-content tbody tr:hover {
+  background: var(--bg-secondary);
+}
+
+/* Blockquotes (used for admonitions) */
+.docs-content blockquote {
+  margin: 0 0 20px 0;
+  padding: 14px 20px;
+  background: var(--bg-tertiary);
+  border-left: 3px solid var(--accent-primary);
+  border-radius: 0 6px 6px 0;
+  color: var(--text-secondary);
+}
+
+.docs-content blockquote p {
+  margin-bottom: 8px;
+}
+
+.docs-content blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.docs-content blockquote strong {
+  color: var(--accent-primary);
+}
+
+/* Horizontal rules */
+.docs-content hr {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  margin: 40px 0;
+}
+
+/* Images */
+.docs-content img {
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+}
+
+/* Checkboxes in lists */
+.docs-content input[type="checkbox"] {
+  accent-color: var(--accent-primary);
+  margin-right: 8px;
 }

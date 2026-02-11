@@ -124,7 +124,7 @@ src/
 
 ## Design System
 
-Based on Palantir-inspired dark UI:
+Dark UI theme:
 
 ### Colors
 

@@ -233,7 +233,7 @@ Structure:
 
 ### 6.3 Bitcoin Attestation (Tag: 0x05)
 
-For dual-anchor (OpenTimestamps compatible) proofs.
+For dual-anchor cross-chain proofs.
 
 ```
 Structure:

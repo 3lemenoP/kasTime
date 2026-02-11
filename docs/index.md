@@ -8,7 +8,7 @@ KTCS is a proof-of-existence timestamping protocol that leverages Kaspa's high-t
 
 ## What is KTCS?
 
-KTCS proves that data existed at a specific point in time by anchoring cryptographic commitments to the Kaspa blockchain. Unlike Bitcoin-based timestamping (which requires hours for confirmation), KTCS exploits Kaspa's ~100ms block times to deliver near-instant timestamps.
+KTCS proves that data existed at a specific point in time by anchoring cryptographic commitments to the Kaspa blockchain. Exploiting Kaspa's ~100ms block times, KTCS delivers near-instant timestamp confirmations.
 
 !!! info "Key Insight"
     Kaspa blocks are *thermodynamic clocks*. The proof-of-work proves that computational energy was expended, creating unforgeable evidence of time.
@@ -92,7 +92,7 @@ KTCS proves that data existed at a specific point in time by anchoring cryptogra
           |   - 10 blocks per second                    |
           |   - GHOSTDAG consensus                      |
           |   - P2PK commitments                        |
-          |   - Thermodynamic security                  |
+          |   - Cumulative proof-of-work (blue work)    |
           +---------------------------------------------+
 ```
 
@@ -102,8 +102,7 @@ KTCS proves that data existed at a specific point in time by anchoring cryptogra
 
 ### P2PK Commitment
 
-!!! warning "Not OP_RETURN"
-    Kaspa does NOT support OP_RETURN. KTCS uses P2PK burn outputs.
+KTCS uses P2PK burn outputs to anchor commitments on-chain.
 
 ```
 Script: 0x20 <32-byte commitment> 0xac
@@ -123,28 +122,6 @@ The commitment acts as a "public key" with no private key, making the output **p
 | `instant` | 100ms | Time-critical applications |
 | `standard` | 1 second | General purpose (default) |
 | `economic` | 10 seconds | Cost-optimized batching |
-
-### Thermodynamic Security
-
-Security is measured in cumulative proof-of-work (blue work):
-
-| Time Since | Security Level |
-|------------|----------------|
-| 1 minute | Low-value records |
-| 1 hour | Legal documents |
-| 1 day | High-value IP |
-| + Bitcoin anchor | Long-term archival |
-
-## Comparison with OpenTimestamps
-
-| Aspect | OpenTimestamps | KTCS |
-|--------|----------------|------|
-| Block time | ~10 minutes | ~100ms |
-| Confirmation | Hours | Seconds |
-| On-chain storage | OP_RETURN | P2PK burn |
-| Calendar requirement | Practical necessity | Optional |
-| DAG support | No | Yes |
-| Thermodynamic metrics | Block depth | Blue work |
 
 ## Next Steps
 

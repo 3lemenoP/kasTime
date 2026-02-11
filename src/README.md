@@ -126,7 +126,7 @@ src/
 
 ## Design System
 
-Based on Palantir-inspired dark UI (see `ktcs-design-brief.md`):
+Dark UI theme:
 
 ### Colors
 
