@@ -1,7 +1,7 @@
 //! Direct Stamping Mode
 //!
 //! This module enables direct timestamping without a calendar server.
-//! Users submit their own OP_RETURN transactions directly to the Kaspa network.
+//! Users submit their own commitment transactions directly to the Kaspa network.
 //!
 //! Benefits:
 //! - Fully self-sovereign (no trust in calendar)
@@ -103,8 +103,6 @@ pub async fn prepare_direct_stamp(
     let (selected_utxos, _total) = select_utxos(&utxos, 0, config.fee_rate)?;
 
     // 4. Build unsigned transaction
-    // Note: include_magic(false) to use standard 32-byte OP_RETURN
-    // (36-byte "KTCS" + commitment is rejected as non-standard by Kaspa)
     let tx_result = TransactionBuilder::new()
         .commitment(&prepared.commitment)
         .add_inputs(selected_utxos.clone())
@@ -141,7 +139,7 @@ pub fn prepare_direct_stamp_offline(
 pub struct PreparedStamp {
     /// Proof structure (pending attestation)
     pub proof: KtcsProof,
-    /// The commitment that will be put in OP_RETURN
+    /// The 32-byte commitment anchored on-chain via P2PK burn
     pub commitment: [u8; 32],
     /// Nonce used in commitment
     pub nonce: [u8; 16],
@@ -198,7 +196,7 @@ pub fn complete_stamp(
         block_info.hash,
         block_info.timestamp,
         tx_hash,
-        0, // Output index (OP_RETURN is typically output 0)
+        0, // Output index (commitment is output 0)
         block_info.blue_work,
         block_info.parent_hashes,
     );
@@ -369,12 +367,17 @@ mod tests {
                 })
                 .collect(),
             outputs: vec![
-                // OP_RETURN output
+                // P2PK burn output (commitment as fake public key)
                 TransactionOutput {
-                    amount: 0,
+                    amount: 20_000_000, // 0.2 KAS
                     script_public_key: ScriptPublicKey {
                         version: 0,
-                        script: vec![0x6a, 0x20, 0xab, 0xcd], // OP_RETURN + data
+                        script: {
+                            let mut s = vec![0x20]; // Push 32 bytes
+                            s.extend_from_slice(&[0xab; 32]); // Fake pubkey (commitment)
+                            s.push(0xac); // OP_CHECKSIG
+                            s
+                        },
                     },
                 },
                 // Change output
