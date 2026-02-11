@@ -37,24 +37,19 @@ export class CalendarClient {
   constructor(baseUrl: string, options?: { allowInsecure?: boolean }) {
     this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
 
-    // Security check: Warn if using unencrypted connections in production
-    const isLocalhost = this.baseUrl.includes('localhost') || this.baseUrl.includes('127.0.0.1');
-    const isSecure = this.baseUrl.startsWith('https://');
-
-    if (!isLocalhost && !isSecure && !options?.allowInsecure) {
-      console.warn(
-        '[KTCS Security Warning] Using unencrypted HTTP connection to calendar server. ' +
-        'This exposes timestamps and proofs to interception. ' +
-        'Use HTTPS in production or set allowInsecure: true to suppress this warning.'
-      );
+    // Resolve relative URLs to absolute using the current page location
+    let absoluteUrl = this.baseUrl;
+    if (typeof window !== 'undefined' && !this.baseUrl.startsWith('http')) {
+      absoluteUrl = new URL(this.baseUrl, window.location.origin).href;
     }
 
-    // Construct WebSocket URL - prefer wss:// for https://
-    if (this.baseUrl.startsWith('https://')) {
-      this.wsUrl = this.baseUrl.replace(/^https/, 'wss') + '/v1/stream';
-    } else {
-      this.wsUrl = this.baseUrl.replace(/^http/, 'ws') + '/v1/stream';
+    // Construct WebSocket URL from the absolute URL
+    if (absoluteUrl.startsWith('https://')) {
+      this.wsUrl = absoluteUrl.replace(/^https/, 'wss') + '/v1/stream';
+    } else if (absoluteUrl.startsWith('http://')) {
+      this.wsUrl = absoluteUrl.replace(/^http/, 'ws') + '/v1/stream';
 
+      const isLocalhost = absoluteUrl.includes('localhost') || absoluteUrl.includes('127.0.0.1');
       if (!isLocalhost && !options?.allowInsecure) {
         console.warn(
           '[KTCS Security Warning] Using unencrypted WebSocket connection (ws://). ' +
@@ -62,6 +57,9 @@ export class CalendarClient {
           'Use wss:// (via HTTPS) in production.'
         );
       }
+    } else {
+      // Fallback for relative URLs without window context
+      this.wsUrl = this.baseUrl + '/v1/stream';
     }
   }
 
