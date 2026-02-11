@@ -218,38 +218,41 @@ function DocsPage() {
   return (
     <div className="max-w-[1400px] mx-auto flex min-h-[calc(100vh-8rem)]">
       {/* Sidebar */}
-      <aside className="w-64 shrink-0 border-r border-[var(--border-subtle)] bg-[var(--bg-secondary)] overflow-y-auto sticky top-16 h-[calc(100vh-8rem)]">
-        <nav className="py-4">
+      <aside className="w-56 shrink-0 border-r border-[var(--border-subtle)] overflow-y-auto sticky top-16 h-[calc(100vh-8rem)]">
+        <nav className="py-6 pr-2">
           {sections.map(section => {
             const isExpanded = expandedSections.has(section.id)
+            const hasActiveChild = section.entries.some(e => e.id === activeDocId)
             return (
-              <div key={section.id} className="mb-1">
+              <div key={section.id} className="mb-0.5">
                 <button
                   onClick={() => toggleSection(section.id)}
-                  className="w-full flex items-center gap-2 px-4 py-2 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                  className={`w-full flex items-center gap-2.5 px-4 py-2 text-xs font-medium uppercase tracking-wider transition-colors ${
+                    hasActiveChild
+                      ? 'text-white'
+                      : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
+                  }`}
                 >
-                  <span className="text-[var(--text-tertiary)]">{section.icon}</span>
                   <span className="flex-1 text-left">{section.title}</span>
                   {isExpanded ? (
-                    <ChevronDown className="w-3.5 h-3.5 text-[var(--text-tertiary)]" />
+                    <ChevronDown className="w-3 h-3" />
                   ) : (
-                    <ChevronRight className="w-3.5 h-3.5 text-[var(--text-tertiary)]" />
+                    <ChevronRight className="w-3 h-3" />
                   )}
                 </button>
                 {isExpanded && (
-                  <div className="ml-4">
+                  <div className="mb-2">
                     {section.entries.map(entry => (
                       <button
                         key={entry.id}
                         onClick={() => navigateTo(entry.id)}
-                        className={`w-full flex items-center gap-2 px-4 py-1.5 text-sm transition-colors ${
+                        className={`w-full text-left px-4 pl-6 py-1.5 text-sm transition-colors border-l-2 ${
                           activeDocId === entry.id
-                            ? 'text-white bg-white/10 border-l-2 border-white'
-                            : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
+                            ? 'text-white border-white'
+                            : 'text-[var(--text-tertiary)] border-transparent hover:text-[var(--text-secondary)] hover:border-[var(--border-default)]'
                         }`}
                       >
-                        {entry.icon}
-                        <span>{entry.title}</span>
+                        {entry.title}
                       </button>
                     ))}
                   </div>
@@ -261,8 +264,8 @@ function DocsPage() {
       </aside>
 
       {/* Content */}
-      <main className="flex-1 min-w-0 px-8 py-8 lg:px-12">
-        <article className="docs-content max-w-4xl">
+      <main className="flex-1 min-w-0 px-10 py-10 lg:px-16">
+        <article className="docs-content max-w-3xl">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{processedContent}</ReactMarkdown>
         </article>
       </main>
