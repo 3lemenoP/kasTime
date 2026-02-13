@@ -40,6 +40,15 @@ yarn-error.log*
 # Testing
 coverage/
 
+# Claude Code
+.claude/
+
+# Build artifacts
+tsconfig.tsbuildinfo
+
+# Database
+ktcs-calendar/data/*.db
+
 # Misc
 *.local
 *.rlib
