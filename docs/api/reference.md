@@ -216,7 +216,6 @@ X-API-Key: your-key-here
 |------|-------------|
 | `"kaspa_block"` | Kaspa blockchain attestation |
 | `"pending"` | Incomplete, needs upgrade |
-| `"bitcoin"` | Bitcoin attestation (dual-anchor) |
 
 **Errors:**
 

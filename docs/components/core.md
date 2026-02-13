@@ -154,7 +154,6 @@ Blockchain anchors:
 pub enum Attestation {
     Pending(PendingAttestation),
     Kaspa(KaspaAttestation),
-    Bitcoin(BitcoinAttestation),
 }
 
 pub struct KaspaAttestation {

@@ -314,7 +314,7 @@ interface VerificationResult {
 }
 
 interface AttestationInfo {
-  attestation_type: 'pending' | 'kaspa' | 'bitcoin';
+  attestation_type: 'pending' | 'kaspa';
   complete: boolean;
   daa_score?: number;
   blue_score?: number;

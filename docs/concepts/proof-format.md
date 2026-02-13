@@ -80,7 +80,7 @@ Each operation starts with a 1-byte tag, optionally followed by data:
 | `0x67` | Keccak256 | `0x67` | Apply Keccak256: `H' = Keccak256(current)` |
 | `0xFF` | Fork | `0xFF <varint count>` | Branch into N parallel paths |
 
-### Varint Encoding (Bitcoin-style)
+### Varint Encoding
 
 Length values use compact variable-length integer encoding:
 
@@ -111,8 +111,6 @@ Attestations prove the commitment is anchored to a blockchain. A proof may conta
 |-----|------|-------------|
 | `0x83` | Pending | Incomplete proof, requires calendar upgrade |
 | `0x84` | Kaspa Block | Complete proof anchored to Kaspa |
-| `0x05` | Bitcoin | Cross-chain anchor (for long-term archival) |
-
 ### Pending Attestation (`0x83`)
 
 Indicates the proof is incomplete and needs to be upgraded via the calendar server.
@@ -148,17 +146,6 @@ Complete proof anchored to the Kaspa blockchain.
 - **Blue Score**: Count of blue blocks in the GHOSTDAG selected chain
 - **Blue Work**: Cumulative proof-of-work (thermodynamic weight) at this block
 - **Parent Hashes**: Captures DAG structure for concurrent event analysis
-
-### Bitcoin Attestation (`0x05`)
-
-For cross-chain anchoring to Bitcoin (optional, for long-term archival).
-
-```
-+--------+--------------+
-| 0x05   | Block Height |
-| 1 byte | uint32 LE    |
-+--------+--------------+
-```
 
 ## On-Chain Commitment Format
 
@@ -238,7 +225,6 @@ f1 20 [32 bytes]     # Prepend sibling hash (0xF1 = Prepend, 0x20 = 32 bytes)
 |------------|--------------|
 | Direct (no Merkle path) | ~200 bytes |
 | Calendar (depth 10) | ~600 bytes |
-| With Bitcoin anchor | ~800 bytes |
 
 ## Verification Algorithm
 

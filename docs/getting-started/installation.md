@@ -7,8 +7,8 @@ This guide covers installing KTCS components for different use cases.
 === "Web Interface"
 
     ```bash
-    git clone https://github.com/aspect-build/ktcs.git
-    cd ktcs
+    git clone https://github.com/3lemenoP/kasTime.git
+    cd kasTime
     npm install
     npm run dev
     ```
@@ -102,8 +102,8 @@ cargo install wasm-pack
 ### Clone Repository
 
 ```bash
-git clone https://github.com/aspect-build/ktcs.git
-cd ktcs
+git clone https://github.com/3lemenoP/kasTime.git
+cd kasTime
 ```
 
 ### Build Everything

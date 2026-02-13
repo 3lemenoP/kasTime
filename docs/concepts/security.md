@@ -84,14 +84,12 @@ The `blue_work` field in Kaspa attestations is a 256-bit big-endian integer repr
 
 ### Security Levels
 
-| Time Since Stamp | Approximate Blue Work | Bitcoin Equivalent |
-|------------------|----------------------|-------------------|
-| 1 minute | ~10^17 | ~0.1 confirmations |
-| 1 hour | ~10^18 | ~1 confirmation |
-| 1 day | ~10^19 | ~6 confirmations |
-| 1 week | ~10^20 | ~42 confirmations |
-
-**Note:** These are approximate equivalences. Kaspa's security model differs from Bitcoin due to the DAG structure.
+| Time Since Stamp | Approximate Blue Work | Security Level |
+|------------------|----------------------|----------------|
+| 1 minute | ~10^17 | Low |
+| 1 hour | ~10^18 | Moderate |
+| 1 day | ~10^19 | High |
+| 1 week | ~10^20 | Very High |
 
 ### Reorg Resistance
 
@@ -110,7 +108,7 @@ Kaspa's GHOSTDAG consensus provides fast finality:
 | General documents | 10 minutes |
 | Legal documents | 1 hour |
 | High-value IP | 24 hours |
-| Archival | + Bitcoin cross-anchor |
+| Archival | 1 week+ |
 
 ## Implementation Security
 

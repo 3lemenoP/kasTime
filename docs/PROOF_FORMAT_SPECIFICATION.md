@@ -66,7 +66,7 @@ Document → SHA256 → Digest → Operations → Commitment → Kaspa TX → At
 │ ATTESTATIONS (1+ items, variable)           │
 │   ├─ Pending: 0x83 + varint len + URL       │
 │   ├─ Kaspa:   0x84 + attestation data       │
-│   └─ Bitcoin: 0x05 + block height           │
+│                                              │
 └─────────────────────────────────────────────┘
 ```
 
@@ -151,7 +151,7 @@ Operations transform the digest into a commitment. Each operation has a tag byte
 | 0x67 | Keccak256 | `67`                        | state = Keccak256(state)    |
 | 0xFF | Fork      | `FF <varint count>`         | (reserved for multi-path)   |
 
-### 5.2 Varint Encoding (Bitcoin-style)
+### 5.2 Varint Encoding
 
 | Value Range       | Encoding                              |
 |-------------------|---------------------------------------|
@@ -230,18 +230,6 @@ Structure:
 | Blue Work     | 32      | Big-endian   | Cumulative proof-of-work              |
 | Parent Count  | varint  | -            | Number of parent blocks               |
 | Parent Hashes | N × 32  | Raw bytes    | Parent block hashes                   |
-
-### 6.3 Bitcoin Attestation (Tag: 0x05)
-
-For dual-anchor cross-chain proofs.
-
-```
-Structure:
-┌────┬──────────────┐
-│ 05 │ Height (4B)  │
-└────┴──────────────┘
-     Little-endian u32
-```
 
 ---
 
