@@ -144,18 +144,23 @@ function HomePage(): JSX.Element {
         throw new Error('No UTXOs found. Wallet has no funds.')
       }
 
-      // Convert UTXOs to WASM format
-      // Kaspa API returns scriptPublicKey with a 2-byte version prefix (e.g., "000020f4...ac").
-      // The WASM expects just the raw script bytes, so strip the first 4 hex chars (2 bytes).
+      // Convert UTXOs to WASM format.
+      // The RPC returns scriptPublicKey in one of two forms:
+      //  - string form: raw hex INCLUDING a 2-byte (4-hex) LE version prefix
+      //    (e.g. "000020f4...ac") — the WASM builder wants the script without it.
+      //  - object form: { version, scriptPublicKey } where scriptPublicKey is
+      //    already the raw script (version is separate, no prefix present).
+      // Stripping 4 hex chars unconditionally corrupts the object-form scripts,
+      // so only strip when the prefix is actually there (string form).
       const wasmUtxos: WasmUtxo[] = utxos.map(u => {
         const spkHex = typeof u.scriptPublicKey === 'string'
-          ? u.scriptPublicKey
-          : u.scriptPublicKey.scriptPublicKey
+          ? u.scriptPublicKey.slice(4) // string form: strip 2-byte version prefix
+          : u.scriptPublicKey.scriptPublicKey // object form: no prefix present
         return {
           transaction_id: u.transactionId,
           index: u.index,
           amount: u.amount.toString(),
-          script_public_key_hex: spkHex.slice(4), // Strip 2-byte version prefix
+          script_public_key_hex: spkHex,
           block_daa_score: Number(u.blockDaaScore),
           is_coinbase: u.isCoinbase,
         }
@@ -186,6 +191,10 @@ function HomePage(): JSX.Element {
         signed.transaction_json,
         createSubmitTxRpcRequest,
       )
+      // Persist the REAL (network) tx id immediately. The 0.2 KAS burn is now
+      // committed on-chain; if confirmation polling below times out, this id
+      // (plus the already-stored nonce) is what lets the user recover the proof.
+      store.setDirectStampState({ transactionId: txId })
 
       // 7. Wait for block confirmation
       store.setDirectStep('confirming')
@@ -241,10 +250,11 @@ function HomePage(): JSX.Element {
     useStampStore.setState({ walletAddress: address })
   }, [])
 
-  // Clear file selection
+  // Clear file selection. setFile(null) already resets file, fileName, hash and
+  // all other file-derived fields together, so we only reset the step machines.
   const handleClear = () => {
     setFile(null)
-    useStampStore.setState({ hash: null, step: 'idle', error: null })
+    useStampStore.setState({ step: 'idle', directStep: 'idle', error: null })
   }
 
   const truncateHash = (h: string) => `${h.slice(0, 16)}...${h.slice(-8)}`

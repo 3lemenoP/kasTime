@@ -49,14 +49,35 @@ export async function initWasm(): Promise<void> {
       // The wasm-pack output should be in src/wasm/
       wasmModule = await import('../wasm/ktcs_wasm');
 
-      // Skip integrity check in development
-      if (EXPECTED_WASM_HASH !== 'dev') {
-        // Verify WASM module integrity would go here
-        // For now, log that we're in production mode
-        console.log('KTCS WASM: Production mode, integrity verification enabled');
+      if (EXPECTED_WASM_HASH === 'dev') {
+        // No pinned hash configured (development): initialize normally and let
+        // the generated glue fetch/instantiate the .wasm itself.
+        await wasmModule.default();
+      } else {
+        // Production integrity check: fetch the raw .wasm bytes, verify their
+        // SHA-256 against VITE_WASM_HASH, then instantiate from the exact bytes
+        // we verified (so verification and execution cannot diverge).
+        const wasmUrl = new URL('../wasm/ktcs_wasm_bg.wasm', import.meta.url);
+        const response = await fetch(wasmUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch WASM binary: ${response.status}`);
+        }
+        const bytes = await response.arrayBuffer();
+
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const actualHash = Array.from(new Uint8Array(digest))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+
+        if (actualHash !== EXPECTED_WASM_HASH.toLowerCase()) {
+          throw new Error(
+            `WASM integrity check failed: expected ${EXPECTED_WASM_HASH.toLowerCase()}, got ${actualHash}`
+          );
+        }
+
+        await wasmModule.default(bytes); // Initialize from the verified bytes
       }
 
-      await wasmModule.default(); // Initialize the WASM module
       initialized = true;
       console.log('KTCS WASM module initialized');
     } catch (error) {

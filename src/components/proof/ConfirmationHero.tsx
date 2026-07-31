@@ -30,15 +30,19 @@ function ConfirmationHero({
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
+      timeZone: 'UTC',
     })
   }
 
   const formatTime = (date: Date) => {
+    // Render actual UTC so the " UTC" label is truthful (previously this used
+    // the viewer's local time zone while still appending " UTC").
     return date.toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
       hour12: false,
+      timeZone: 'UTC',
     }) + ' UTC'
   }
 
@@ -105,22 +109,24 @@ function ConfirmationHero({
             </div>
           )}
 
-          <div className="flex items-center justify-center gap-2">
-            <code className="font-data text-sm text-[var(--text-tertiary)]">
-              sha256:{truncateHash(hash)}
-            </code>
-            <button
-              onClick={handleCopyHash}
-              className="p-1.5 rounded-sm hover:bg-[var(--bg-tertiary)] transition-colors"
-              title="Copy full hash"
-            >
-              {copied ? (
-                <CheckCircle className="w-4 h-4 text-[var(--status-success)]" />
-              ) : (
-                <Copy className="w-4 h-4 text-[var(--text-tertiary)] hover:text-white" />
-              )}
-            </button>
-          </div>
+          {hash && (
+            <div className="flex items-center justify-center gap-2">
+              <code className="font-data text-sm text-[var(--text-tertiary)]">
+                sha256:{truncateHash(hash)}
+              </code>
+              <button
+                onClick={handleCopyHash}
+                className="p-1.5 rounded-sm hover:bg-[var(--bg-tertiary)] transition-colors"
+                title="Copy full hash"
+              >
+                {copied ? (
+                  <CheckCircle className="w-4 h-4 text-[var(--status-success)]" />
+                ) : (
+                  <Copy className="w-4 h-4 text-[var(--text-tertiary)] hover:text-white" />
+                )}
+              </button>
+            </div>
+          )}
         </motion.div>
       </div>
     </motion.div>

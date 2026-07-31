@@ -151,10 +151,15 @@ export default function WalletInput({
           />
         </svg>
         <div className="text-xs text-[var(--text-secondary)]">
-          <p className="font-medium text-[var(--status-warning)]">Private Key Security</p>
+          <p className="font-medium text-[var(--status-warning)]">
+            Private Key Security &mdash; Use at Your Own Risk
+          </p>
           <p className="mt-1">
-            Your key is processed locally and never sent to any server. Make sure you trust this
-            device and connection.
+            Your key is processed locally and never sent to any server, and it is never saved to
+            disk. However, while entered it is held in this browser tab&rsquo;s memory, where a
+            malicious browser extension or injected script could read it. Only paste a private key
+            on a device and browser you fully trust, and prefer a dedicated low-value wallet. For
+            larger funds, use the calendar mode instead.
           </p>
         </div>
       </div>

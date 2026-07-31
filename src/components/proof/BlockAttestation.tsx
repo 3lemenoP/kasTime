@@ -33,6 +33,8 @@ function BlockAttestation({
   const truncateHash = (hash: string) => `${hash.slice(0, 12)}...${hash.slice(-8)}`
 
   const formatTimestamp = (date: Date) => {
+    // Render actual UTC so the " UTC" label is truthful (previously this used
+    // the viewer's local time zone while still appending " UTC").
     return date.toLocaleString('en-US', {
       year: 'numeric',
       month: '2-digit',
@@ -41,6 +43,7 @@ function BlockAttestation({
       minute: '2-digit',
       second: '2-digit',
       hour12: false,
+      timeZone: 'UTC',
     }) + ' UTC'
   }
 

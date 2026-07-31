@@ -14,7 +14,6 @@
     "docs:deploy": "python -m mkdocs gh-deploy"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.0.0",
     "framer-motion": "^10.16.0",
     "lucide-react": "^0.300.0",
     "react": "^18.2.0",
