@@ -33,8 +33,15 @@ pub enum KaspaServiceError {
     #[error("Transaction submission failed: {0}")]
     SubmissionFailed(String),
 
-    #[error("Transaction not confirmed within timeout")]
-    ConfirmationTimeout,
+    /// The transaction WAS accepted by the network but confirmation could not be
+    /// observed within the timeout. Carries the accepted tx hash (hex).
+    ///
+    /// CRITICAL: The caller must NOT rebuild/resubmit a new commitment in this
+    /// case — the funds are already committed on-chain. Doing so would double-pay
+    /// the fee and spend stale UTXOs. The stamps should instead be held for later
+    /// confirmation using this already-submitted tx.
+    #[error("Transaction {tx_hash} submitted but not confirmed within timeout")]
+    SubmittedUnconfirmed { tx_hash: String },
 
     #[error("Insufficient funds: need {needed} sompi, have {available} sompi")]
     InsufficientFunds { needed: u64, available: u64 },
@@ -682,11 +689,34 @@ impl KaspaService {
         info!("Transaction submitted: {}", hex::encode(tx_hash));
         debug!("Transaction hash: {}", hex::encode(tx_hash));
 
-        // Wait for confirmation
-        let block = self.client
+        // Wait for confirmation.
+        //
+        // IMPORTANT: at this point the tx has already been ACCEPTED by the node
+        // (submit_transaction returned Ok). If we merely time out waiting for the
+        // block confirmation, the commitment is nonetheless on-chain. Returning a
+        // plain timeout error here would cause the batch loop to requeue and
+        // build a SECOND commitment tx (double fee, stale UTXOs). We therefore
+        // surface a distinct SubmittedUnconfirmed error carrying the accepted tx
+        // hash so the caller can hold the stamps instead of resubmitting.
+        let block = match self
+            .client
             .wait_for_confirmation(&tx_hash, self.config.confirmation_timeout_ms)
             .await
-            .map_err(|_| KaspaServiceError::ConfirmationTimeout)?;
+        {
+            Ok(block) => block,
+            Err(e) => {
+                warn!(
+                    "Transaction {} accepted but not confirmed within {}ms ({}); \
+                     NOT resubmitting to avoid double-anchoring",
+                    hex::encode(tx_hash),
+                    self.config.confirmation_timeout_ms,
+                    e
+                );
+                return Err(KaspaServiceError::SubmittedUnconfirmed {
+                    tx_hash: hex::encode(tx_hash),
+                });
+            }
+        };
 
         info!(
             "Transaction confirmed in block {} at DAA score {}",

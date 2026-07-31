@@ -26,6 +26,8 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::services::database::{Database, DbStampRecord, DbStampStatus};
+
 /// WebSocket message from client
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
@@ -275,6 +277,42 @@ pub trait HasAllowedOrigins {
     fn allowed_origins(&self) -> &[String];
 }
 
+/// Trait exposing whether the server sits behind a trusted reverse proxy.
+/// When true, the per-IP connection cap keys on the forwarded client IP instead of
+/// the (always-127.0.0.1) TCP peer.
+pub trait HasProxyConfig {
+    fn trust_proxy(&self) -> bool;
+}
+
+/// Trait exposing the database, used for a best-effort proof re-query when a slow
+/// WebSocket connection lags behind the confirmation broadcast channel.
+pub trait HasDatabase {
+    fn database(&self) -> Arc<Database>;
+}
+
+/// Build a `Confirmed` message from a persisted stamp record, if it is confirmed
+/// and carries a complete proof with a Kaspa attestation. Returns None otherwise.
+fn confirmed_message_from_record(record: &DbStampRecord) -> Option<ServerMessage> {
+    if record.status != DbStampStatus::Confirmed {
+        return None;
+    }
+    let proof_bytes = record.proof.as_ref()?;
+    let proof = ktcs_core::deserialize_proof(proof_bytes).ok()?;
+    let att = proof.kaspa_attestations().next()?;
+    let proof_base64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        proof_bytes,
+    );
+    Some(ServerMessage::Confirmed {
+        proof_id: record.id.clone(),
+        block_hash: hex::encode(att.block_hash),
+        daa_score: att.daa_score,
+        blue_score: att.blue_score,
+        timestamp: att.timestamp,
+        proof: proof_base64,
+    })
+}
+
 /// Validate WebSocket upgrade request origin
 fn validate_ws_origin(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
     // If wildcard is configured, allow all
@@ -304,7 +342,7 @@ fn validate_ws_origin(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
 }
 
 /// WebSocket upgrade handler with origin validation
-pub async fn ws_handler<S: WsAppState + HasAllowedOrigins>(
+pub async fn ws_handler<S: WsAppState + HasAllowedOrigins + HasProxyConfig + HasDatabase>(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
     State(state): State<S>,
@@ -317,8 +355,18 @@ pub async fn ws_handler<S: WsAppState + HasAllowedOrigins>(
         return (StatusCode::FORBIDDEN, "Invalid origin").into_response();
     }
 
+    // Determine the client IP for the per-IP connection cap.
+    // Behind nginx every TCP peer is 127.0.0.1, which would turn MAX_CONNECTIONS_PER_IP
+    // into a single GLOBAL ceiling. When TRUST_PROXY is set, key on the forwarded
+    // client IP (X-Real-IP / rightmost XFF) so the cap is genuinely per-client, with a
+    // safe fallback to the TCP peer when the header is missing or we are not proxied.
+    let ip = if state.trust_proxy() {
+        crate::forwarded_client_ip(&headers).unwrap_or_else(|| addr.ip())
+    } else {
+        addr.ip()
+    };
+
     // Check per-IP connection limit
-    let ip = addr.ip();
     if !state.ws_state().track_connection(ip).await {
         warn!("WebSocket connection rejected: too many connections from {}", ip);
         return (StatusCode::TOO_MANY_REQUESTS, "Too many connections from this IP").into_response();
@@ -328,7 +376,7 @@ pub async fn ws_handler<S: WsAppState + HasAllowedOrigins>(
 }
 
 /// Handle a WebSocket connection
-async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S, client_ip: IpAddr) {
+async fn handle_socket<S: WsAppState + HasDatabase>(socket: WebSocket, state: S, client_ip: IpAddr) {
     let ws_state = state.ws_state();
     let session_id = ws_state.allocate_session_id().await;
 
@@ -384,6 +432,7 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S, client_ip: Ip
     let subs_clone = session_subscriptions.clone();
     let tx_clone = tx.clone();
     let confirm_cancel = cancel_token.clone();
+    let confirm_db = state.database();
     let confirm_task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -411,7 +460,22 @@ async fn handle_socket<S: WsAppState>(socket: WebSocket, state: S, client_ip: Ip
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            warn!("Session lagged behind by {} messages", n);
+                            // The broadcast buffer overflowed for this slow connection,
+                            // so some `confirmed` events were dropped. Best-effort: re-query
+                            // the DB for each currently-subscribed proof and re-send any that
+                            // have since confirmed, so the client isn't silently starved.
+                            // (The frontend also polls, so this is a backstop.)
+                            warn!("Session lagged behind by {} messages; re-querying DB for subscribed proofs", n);
+                            let subs: Vec<String> = subs_clone.read().await.iter().cloned().collect();
+                            for proof_id in subs {
+                                if let Ok(Some(record)) = confirm_db.get_stamp(&proof_id).await {
+                                    if let Some(msg) = confirmed_message_from_record(&record) {
+                                        if tx_clone.send(msg).await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             break;

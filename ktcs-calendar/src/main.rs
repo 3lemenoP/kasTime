@@ -4,7 +4,7 @@
 
 use axum::{
     extract::{Path, Request, State},
-    http::{header, HeaderValue, Method, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::Response,
     routing::{get, post},
@@ -21,8 +21,8 @@ use tower_http::{
     cors::CorsLayer,
     limit::RequestBodyLimitLayer,
 };
-use tracing::{info, warn, error, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::{info, warn, error};
+use tracing_subscriber::EnvFilter;
 use subtle::ConstantTimeEq;
 
 mod routes;
@@ -32,10 +32,13 @@ use ktcs_core::{
     serialize_proof, Attestation, BatchMode, KaspaAttestation, KtcsProof, MerkleTree,
     PendingAttestation,
 };
-use routes::websocket::{ws_handler, BatchedEvent, ConfirmationEvent, HasAllowedOrigins, WsAppState, WsState};
+use routes::websocket::{
+    ws_handler, BatchedEvent, ConfirmationEvent, HasAllowedOrigins, HasDatabase, HasProxyConfig,
+    WsAppState, WsState,
+};
 use services::batch_manager::{BatchManager, PendingStamp};
 use services::database::{Database, DbStampRecord, DbStampStatus};
-use services::kaspa_service::{KaspaService, KaspaServiceConfig};
+use services::kaspa_service::{KaspaService, KaspaServiceConfig, KaspaServiceError};
 use services::recycle_service::RecycleService;
 
 /// Application state shared across handlers
@@ -53,6 +56,8 @@ struct AppState {
     api_key: Option<String>,
     /// Allowed CORS origins (for WebSocket validation)
     cors_origins: Vec<String>,
+    /// Whether to trust proxy headers (X-Real-IP / rightmost XFF) for the client IP
+    trust_proxy: bool,
 }
 
 impl WsAppState for AppState {
@@ -64,6 +69,18 @@ impl WsAppState for AppState {
 impl HasAllowedOrigins for AppState {
     fn allowed_origins(&self) -> &[String] {
         &self.cors_origins
+    }
+}
+
+impl HasProxyConfig for AppState {
+    fn trust_proxy(&self) -> bool {
+        self.trust_proxy
+    }
+}
+
+impl HasDatabase for AppState {
+    fn database(&self) -> Arc<Database> {
+        self.database.clone()
     }
 }
 
@@ -195,8 +212,40 @@ struct ServerConfig {
     trust_proxy: bool,
 }
 
-/// Proxy-aware IP key extractor for rate limiting
-/// When trust_proxy is true, checks X-Forwarded-For header first
+/// Extract the client IP from proxy-set headers (only trusted when TRUST_PROXY=true).
+///
+/// SECURITY: nginx sets `X-Real-IP` from `$remote_addr` (the TCP peer it actually
+/// observed) and *appends* that peer to `X-Forwarded-For` via
+/// `$proxy_add_x_forwarded_for`. A remote client can put anything in the request's
+/// initial `X-Forwarded-For`, so the LEFTMOST entry is attacker-controlled while the
+/// RIGHTMOST entry is the address the trusted proxy saw. The previous code trusted
+/// the leftmost entry, letting an attacker spoof arbitrary IPs to bypass the
+/// per-IP rate limiter (and balloon governor state with fake keys). We now prefer
+/// `X-Real-IP`, then fall back to the RIGHTMOST `X-Forwarded-For` entry.
+pub(crate) fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
+    if let Some(real_ip) = headers.get("x-real-ip") {
+        if let Ok(s) = real_ip.to_str() {
+            if let Ok(ip) = s.trim().parse::<IpAddr>() {
+                return Some(ip);
+            }
+        }
+    }
+    if let Some(xff) = headers.get("x-forwarded-for") {
+        if let Ok(s) = xff.to_str() {
+            // Rightmost entry = the address the trusted proxy actually connected from.
+            if let Some(last) = s.split(',').next_back() {
+                if let Ok(ip) = last.trim().parse::<IpAddr>() {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Proxy-aware IP key extractor for rate limiting.
+/// When trust_proxy is true, derives the client IP from proxy headers
+/// (X-Real-IP / rightmost X-Forwarded-For); otherwise uses the TCP peer.
 #[derive(Clone)]
 struct ProxyAwareIpExtractor {
     trust_proxy: bool,
@@ -207,23 +256,8 @@ impl KeyExtractor for ProxyAwareIpExtractor {
 
     fn extract<T>(&self, req: &axum::http::Request<T>) -> Result<Self::Key, GovernorError> {
         if self.trust_proxy {
-            // Check X-Forwarded-For header (first IP is the original client)
-            if let Some(xff) = req.headers().get("x-forwarded-for") {
-                if let Ok(xff_str) = xff.to_str() {
-                    if let Some(first_ip) = xff_str.split(',').next() {
-                        if let Ok(ip) = first_ip.trim().parse::<IpAddr>() {
-                            return Ok(ip);
-                        }
-                    }
-                }
-            }
-            // Also check X-Real-IP header (used by nginx)
-            if let Some(real_ip) = req.headers().get("x-real-ip") {
-                if let Ok(ip_str) = real_ip.to_str() {
-                    if let Ok(ip) = ip_str.trim().parse::<IpAddr>() {
-                        return Ok(ip);
-                    }
-                }
+            if let Some(ip) = forwarded_client_ip(req.headers()) {
+                return Ok(ip);
             }
         }
         // Fall back to peer IP
@@ -464,11 +498,14 @@ async fn api_key_middleware(
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    // Initialize logging.
+    // Honor RUST_LOG via EnvFilter (documented in .env.example / README) and fall
+    // back to a sane default when it is unset or unparseable.
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,ktcs_calendar=info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .init();
 
     // Load environment variables
     dotenvy::dotenv().ok();
@@ -518,9 +555,12 @@ async fn main() {
     // Initialize WebSocket state
     let ws_state = Arc::new(WsState::new());
 
-    // Initialize database
+    // Initialize database.
+    // The default MUST include `?mode=rwc` so sqlx creates the file on a fresh
+    // install with no env config; without it, startup fails with "unable to open
+    // database file".
     let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "sqlite:ktcs-calendar.db".to_string());
+        .unwrap_or_else(|_| "sqlite:ktcs-calendar.db?mode=rwc".to_string());
     let database = match Database::new(&db_url).await {
         Ok(db) => Arc::new(db),
         Err(e) => {
@@ -529,6 +569,16 @@ async fn main() {
         }
     };
     info!("Database initialized: {}", db_url);
+
+    // Crash recovery: reload any `pending` stamps persisted before the last stop
+    // (e.g. from a `systemctl restart` -> SIGTERM) back into the batch manager so
+    // in-flight stamps are re-batched instead of being orphaned forever.
+    let batch_manager = Arc::new(BatchManager::new());
+    match recover_pending_stamps(&database, &batch_manager).await {
+        Ok(n) if n > 0 => info!("Crash recovery: requeued {} pending stamp(s) into the batch manager", n),
+        Ok(_) => info!("Crash recovery: no pending stamps to requeue"),
+        Err(e) => warn!("Crash recovery failed to reload pending stamps: {}", e),
+    }
 
     // Store API key in state for auth middleware (only if required)
     let api_key = if server_config.require_api_key {
@@ -539,13 +589,14 @@ async fn main() {
 
     // Initialize application state
     let state = AppState {
-        batch_manager: Arc::new(BatchManager::new()),
+        batch_manager,
         database,
         kaspa_service,
         ws_state,
         public_url: server_config.public_url.clone(),
         api_key: api_key.clone(),
         cors_origins: server_config.cors_origins.clone(),
+        trust_proxy: server_config.trust_proxy,
     };
 
     // Create shutdown channel for graceful shutdown
@@ -648,19 +699,30 @@ async fn main() {
     // Build CORS layer
     let cors_layer = build_cors_layer(&server_config.cors_origins);
 
-    // Build protected routes (require API key if configured)
-    let protected_routes = Router::new()
+    // Split /v1 into write vs. public routes.
+    //
+    // Per the documented "protects write ops" intent, the API key guards ONLY the
+    // write endpoint (POST /v1/stamp). Reads (GET /v1/stamp/:id), verification
+    // (POST /v1/verify) and the WebSocket stream (GET /v1/stream) are PUBLIC, so a
+    // public frontend can read/stream/verify even when REQUIRE_API_KEY=true.
+    // Browsers cannot set X-API-Key on a WebSocket handshake at all, so gating the
+    // WS behind the key previously made a working public frontend impossible.
+    let write_routes = Router::new()
         .route("/stamp", post(submit_stamp))
+        .route_layer(middleware::from_fn_with_state(state.clone(), api_key_middleware));
+
+    let public_v1_routes = Router::new()
         .route("/stamp/:id", get(get_stamp))
         .route("/verify", post(verify_proof))
-        .route("/stream", get(ws_handler::<AppState>))
-        .route_layer(middleware::from_fn_with_state(state.clone(), api_key_middleware));
+        .route("/stream", get(ws_handler::<AppState>));
+
+    let v1_routes = write_routes.merge(public_v1_routes);
 
     // Build router with security layers
     // CORS must be applied LAST (outermost) so it adds headers to ALL responses including rate-limited 429s
     let app = Router::new()
         .route("/health", get(health_check))  // Health check without auth
-        .nest("/v1", protected_routes)
+        .nest("/v1", v1_routes)
         .layer(ServiceBuilder::new()
             // Body size limit
             .layer(RequestBodyLimitLayer::new(server_config.max_body_size))
@@ -717,10 +779,26 @@ async fn main() {
     let app = app.into_make_service_with_connect_info::<SocketAddr>();
     let server = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            // Wait for Ctrl+C signal
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to install Ctrl+C handler");
+            // Wait for EITHER SIGINT (Ctrl+C) OR SIGTERM. systemd stops services
+            // with SIGTERM, so listening only for Ctrl+C (SIGINT) meant every
+            // `systemctl stop/restart` skipped this drain path and hard-killed the
+            // process, stranding in-flight stamps.
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sigterm =
+                    signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => info!("SIGINT received"),
+                    _ = sigterm.recv() => info!("SIGTERM received"),
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                tokio::signal::ctrl_c()
+                    .await
+                    .expect("Failed to install Ctrl+C handler");
+            }
             info!("Shutdown signal received, draining requests...");
 
             // Signal batch processor to shut down
@@ -1104,12 +1182,12 @@ async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receive
                 mode
             );
 
-            // Broadcast batched status for each stamp
-            for pending in &stamps {
-                state.ws_state.broadcast_batched(BatchedEvent {
-                    proof_id: pending.id.clone(),
-                });
-            }
+            // NOTE: the `batched` WS event is intentionally NOT broadcast here.
+            // Previously it fired before submission, so clients were told "batched"
+            // even for batches that then failed to submit, and the DB `batched`
+            // status was never written (making it unreachable). We now emit both the
+            // `batched` status and event together, only once a tx has actually been
+            // accepted but not yet confirmed (the SubmittedUnconfirmed path below).
 
             // Build Merkle tree from digests
             let leaves: Vec<[u8; 32]> = stamps.iter().map(|s| s.digest).collect();
@@ -1133,7 +1211,34 @@ async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receive
             // Submit commitment to Kaspa blockchain (or mock if not connected)
             let submission = match state.kaspa_service.submit_commitment(merkle_root).await {
                 Ok(result) => result,
+                // The tx was ACCEPTED on-chain but confirmation timed out. Do NOT
+                // rebuild/resubmit — that would double-anchor (pay the fee twice and
+                // spend stale UTXOs). Instead mark the stamps `batched` (submitted,
+                // awaiting confirmation) and broadcast the `batched` event. They are
+                // not requeued; a follow-up confirmation would need this tx hash.
+                Err(KaspaServiceError::SubmittedUnconfirmed { tx_hash }) => {
+                    tracing::warn!(
+                        "Batch tx {} accepted but unconfirmed; marking {} stamp(s) as batched \
+                         (NOT resubmitting to avoid double-anchoring)",
+                        tx_hash,
+                        stamps.len()
+                    );
+                    for pending in &stamps {
+                        if let Err(e) = state
+                            .database
+                            .update_stamp_status(&pending.id, DbStampStatus::Batched, None)
+                            .await
+                        {
+                            tracing::error!("Failed to mark stamp {} as batched: {}", pending.id, e);
+                        }
+                        state.ws_state.broadcast_batched(BatchedEvent {
+                            proof_id: pending.id.clone(),
+                        });
+                    }
+                    continue;
+                }
                 Err(e) => {
+                    // Submit genuinely failed (tx never accepted) → safe to requeue.
                     tracing::error!("Failed to submit commitment: {}", e);
 
                     // Requeue stamps for retry instead of discarding
@@ -1208,17 +1313,21 @@ async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receive
                     &proof_bytes,
                 );
 
-                // Update database
+                // Atomically write status + proof + confirmed_at in a SINGLE UPDATE.
+                // Previously these were two separate writes, so a crash between them
+                // could leave a `confirmed` row carrying a stale/pending proof with no
+                // Kaspa attestation. confirm_stamp guarantees a confirmed row always
+                // has its complete proof.
                 let confirmed_at_secs = (submission.timestamp / 1000) as i64;
-                if let Err(e) = state.database.update_stamp_status(
-                    &pending.id,
-                    DbStampStatus::Confirmed,
-                    Some(confirmed_at_secs),
-                ).await {
-                    tracing::error!("Failed to update stamp status in database: {}", e);
-                }
-                if let Err(e) = state.database.update_stamp_proof(&pending.id, &proof_bytes).await {
-                    tracing::error!("Failed to update stamp proof in database: {}", e);
+                if let Err(e) = state
+                    .database
+                    .confirm_stamp(&pending.id, &proof_bytes, confirmed_at_secs)
+                    .await
+                {
+                    tracing::error!("Failed to atomically confirm stamp in database: {}", e);
+                    // Do not broadcast a confirmation we failed to persist; a later
+                    // recovery/poll can reconcile from the still-pending row.
+                    continue;
                 }
 
                 info!("Stamp confirmed: {}", pending.id);
@@ -1235,6 +1344,55 @@ async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receive
             }
         }
     }
+}
+
+/// Parse a stored batch-mode string back into a [`BatchMode`].
+///
+/// The DB persists `format!("{:?}", mode)` ("Instant"/"Standard"/"Economic"); we
+/// also accept the lowercase serde form for robustness. Unknown values fall back
+/// to the default (Standard).
+fn parse_batch_mode(s: &str) -> BatchMode {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "instant" => BatchMode::Instant,
+        "economic" => BatchMode::Economic,
+        "standard" => BatchMode::Standard,
+        other => {
+            warn!("Unknown batch_mode '{}' during recovery, defaulting to standard", other);
+            BatchMode::Standard
+        }
+    }
+}
+
+/// Reload persisted `pending` stamps into the batch manager on startup.
+///
+/// Pending rows are stamps that were accepted but whose batch had not yet been
+/// committed when the process last stopped. Without this, every restart orphans
+/// them as `pending` rows that the confirmed-only cleanup task never removes.
+///
+/// Note: `batched` rows (a tx was submitted but confirmation timed out — see the
+/// SubmittedUnconfirmed path) are deliberately NOT requeued here, as resubmitting
+/// them would double-anchor. Returns the number of stamps requeued.
+async fn recover_pending_stamps(
+    database: &Database,
+    batch_manager: &BatchManager,
+) -> std::result::Result<usize, services::database::DatabaseError> {
+    let pending = database.get_stamps_by_status(DbStampStatus::Pending).await?;
+    let mut requeued = 0usize;
+    for record in pending {
+        let mode = parse_batch_mode(&record.batch_mode);
+        if batch_manager
+            .add_digest(record.id.clone(), record.digest, mode)
+            .await
+        {
+            requeued += 1;
+        } else {
+            warn!(
+                "Could not requeue pending stamp {} on startup (batch limit reached)",
+                record.id
+            );
+        }
+    }
+    Ok(requeued)
 }
 
 fn format_timestamp(ms: u64) -> String {
@@ -1280,6 +1438,7 @@ mod tests {
             public_url: "http://localhost:3001".to_string(),
             api_key: None, // No API key for tests
             cors_origins: vec!["*".to_string()], // Allow all origins in tests
+            trust_proxy: false,
         }
     }
 
@@ -1290,6 +1449,22 @@ mod tests {
             .route("/v1/stamp", post(submit_stamp))
             .route("/v1/stamp/:id", get(get_stamp))
             .route("/v1/verify", post(verify_proof))
+            .with_state(state)
+    }
+
+    /// Create a router that mirrors production auth routing: the API key guards
+    /// ONLY POST /v1/stamp; reads/verify/health stay public.
+    fn create_test_router_with_auth(state: AppState) -> Router {
+        let write_routes = Router::new()
+            .route("/stamp", post(submit_stamp))
+            .route_layer(middleware::from_fn_with_state(state.clone(), api_key_middleware));
+        let public_v1 = Router::new()
+            .route("/stamp/:id", get(get_stamp))
+            .route("/verify", post(verify_proof));
+        let v1 = write_routes.merge(public_v1);
+        Router::new()
+            .route("/health", get(health_check))
+            .nest("/v1", v1)
             .with_state(state)
     }
 
@@ -1456,12 +1631,10 @@ mod tests {
                         let proof_bytes = serialize_proof(&proof);
                         let confirmed_at_secs = (submission.timestamp / 1000) as i64;
 
-                        let _ = batch_state.database.update_stamp_status(
-                            &pending.id,
-                            DbStampStatus::Confirmed,
-                            Some(confirmed_at_secs),
-                        ).await;
-                        let _ = batch_state.database.update_stamp_proof(&pending.id, &proof_bytes).await;
+                        let _ = batch_state
+                            .database
+                            .confirm_stamp(&pending.id, &proof_bytes, confirmed_at_secs)
+                            .await;
                     }
                 }
             }
@@ -1553,6 +1726,156 @@ mod tests {
         } else {
             panic!("Expected Kaspa attestation");
         }
+    }
+
+    #[tokio::test]
+    async fn test_api_key_only_guards_writes() {
+        // C7 fix: with REQUIRE_API_KEY on, the key must protect ONLY POST /v1/stamp.
+        let mut state = create_test_state().await;
+        state.api_key = Some("test-api-key-1234567890".to_string());
+        let app = create_test_router_with_auth(state);
+
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let body = serde_json::json!({ "digest": digest, "batch_mode": "instant" }).to_string();
+
+        // POST /v1/stamp WITHOUT key -> 401
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stamp")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "write must require key");
+
+        // POST /v1/stamp WITH correct key -> 200
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/stamp")
+                    .header("Content-Type", "application/json")
+                    .header("X-API-Key", "test-api-key-1234567890")
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "write must succeed with key");
+
+        // GET /v1/stamp/:id WITHOUT key -> public (404 for unknown id, never 401)
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/stamp/does_not_exist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "reads must be public");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // POST /v1/verify WITHOUT key -> public (400 for a garbage proof, never 401)
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/verify")
+                    .body(Body::from(vec![0u8, 1, 2, 3]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "verify must be public");
+
+        // GET /health -> public
+        let resp = app
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_forwarded_client_ip_rejects_spoofed_leftmost_xff() {
+        // X-Real-IP is preferred when present.
+        let mut h = HeaderMap::new();
+        h.insert("x-real-ip", "203.0.113.9".parse().unwrap());
+        h.insert("x-forwarded-for", "1.1.1.1, 203.0.113.9".parse().unwrap());
+        assert_eq!(forwarded_client_ip(&h).unwrap().to_string(), "203.0.113.9");
+
+        // Without X-Real-IP, the RIGHTMOST XFF entry (proxy-observed) is used, NOT the
+        // attacker-controlled leftmost one.
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "6.6.6.6, 203.0.113.9".parse().unwrap());
+        assert_eq!(forwarded_client_ip(&h).unwrap().to_string(), "203.0.113.9");
+
+        // Single-entry XFF.
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "198.51.100.7".parse().unwrap());
+        assert_eq!(forwarded_client_ip(&h).unwrap().to_string(), "198.51.100.7");
+
+        // No proxy headers -> None (caller falls back to the TCP peer).
+        assert!(forwarded_client_ip(&HeaderMap::new()).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_pending_stamps_requeues() {
+        // C6b fix: pending rows persisted before a restart are reloaded into the
+        // batch manager instead of being orphaned.
+        let db = Database::in_memory().await.unwrap();
+
+        for (i, mode) in ["Instant", "Standard"].iter().enumerate() {
+            db.save_stamp(&DbStampRecord {
+                id: format!("recover_{}", i),
+                digest: [i as u8; 32],
+                status: DbStampStatus::Pending,
+                submitted_at: 1000 + i as i64,
+                confirmed_at: None,
+                proof: None,
+                batch_mode: mode.to_string(),
+            })
+            .await
+            .unwrap();
+        }
+        // A confirmed row must NOT be requeued.
+        db.save_stamp(&DbStampRecord {
+            id: "already_done".to_string(),
+            digest: [42u8; 32],
+            status: DbStampStatus::Confirmed,
+            submitted_at: 2000,
+            confirmed_at: Some(2001),
+            proof: Some(vec![1, 2, 3]),
+            batch_mode: "Instant".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let bm = BatchManager::new();
+        let n = recover_pending_stamps(&db, &bm).await.unwrap();
+        assert_eq!(n, 2, "only the two pending rows are requeued");
+        assert_eq!(bm.pending_count().await, 2);
+        assert_eq!(bm.pending_count_by_mode(BatchMode::Instant).await, 1);
+        assert_eq!(bm.pending_count_by_mode(BatchMode::Standard).await, 1);
+    }
+
+    #[test]
+    fn test_parse_batch_mode() {
+        assert_eq!(parse_batch_mode("Instant"), BatchMode::Instant);
+        assert_eq!(parse_batch_mode("instant"), BatchMode::Instant);
+        assert_eq!(parse_batch_mode("Economic"), BatchMode::Economic);
+        assert_eq!(parse_batch_mode("Standard"), BatchMode::Standard);
+        // Unknown falls back to the default.
+        assert_eq!(parse_batch_mode("bogus"), BatchMode::Standard);
     }
 
     #[test]

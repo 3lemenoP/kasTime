@@ -231,7 +231,35 @@ impl Database {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Atomically confirm a stamp: set status='confirmed', proof, and confirmed_at
+    /// in a single UPDATE.
+    ///
+    /// This avoids the previous two-write pattern (status then proof) where a crash
+    /// between the writes could leave a `confirmed` row with a stale/pending proof
+    /// that lacks the Kaspa attestation. Because both columns are set in one
+    /// statement, `get_stamp` can never observe a confirmed row without its proof.
+    pub async fn confirm_stamp(&self, id: &str, proof: &[u8], confirmed_at: i64) -> Result<bool> {
+        let result = sqlx::query(
+            r#"
+            UPDATE stamps
+            SET status = 'confirmed',
+                proof = ?,
+                confirmed_at = ?,
+                updated_at = strftime('%s', 'now')
+            WHERE id = ?
+            "#,
+        )
+        .bind(proof)
+        .bind(confirmed_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Update stamp proof
+    #[allow(dead_code)] // Retained for admin/maintenance; confirm path uses confirm_stamp
     pub async fn update_stamp_proof(&self, id: &str, proof: &[u8]) -> Result<bool> {
         let result = sqlx::query(
             r#"
@@ -249,8 +277,9 @@ impl Database {
     }
 
     /// Get all stamps with a given status
-    /// Used for admin/maintenance operations
-    #[allow(dead_code)]
+    ///
+    /// Used on startup for crash recovery (reloading `pending` rows into the
+    /// batch manager) and for admin/maintenance operations.
     pub async fn get_stamps_by_status(&self, status: DbStampStatus) -> Result<Vec<DbStampRecord>> {
         let rows = sqlx::query(
             r#"
@@ -381,5 +410,67 @@ mod tests {
         // Count
         let count = db.count_by_status(DbStampStatus::Confirmed).await.unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_confirm_stamp_atomic() {
+        let db = Database::in_memory().await.unwrap();
+
+        let record = DbStampRecord {
+            id: "atomic_1".to_string(),
+            digest: [7u8; 32],
+            status: DbStampStatus::Pending,
+            submitted_at: 1234567890,
+            confirmed_at: None,
+            proof: Some(vec![0xAB, 0xCD]), // stale/pending proof
+            batch_mode: "Instant".to_string(),
+        };
+        db.save_stamp(&record).await.unwrap();
+
+        // Single atomic write flips status, proof and confirmed_at together.
+        let proof = vec![1u8, 2, 3, 4, 5];
+        let updated = db.confirm_stamp("atomic_1", &proof, 1234567999).await.unwrap();
+        assert!(updated);
+
+        let got = db.get_stamp("atomic_1").await.unwrap().unwrap();
+        assert_eq!(got.status, DbStampStatus::Confirmed);
+        assert_eq!(got.confirmed_at, Some(1234567999));
+        // A confirmed row always carries the new proof, never the stale one.
+        assert_eq!(got.proof.as_deref(), Some(proof.as_slice()));
+    }
+
+    #[tokio::test]
+    async fn test_get_stamps_by_status_recovery() {
+        let db = Database::in_memory().await.unwrap();
+
+        for i in 0..3 {
+            db.save_stamp(&DbStampRecord {
+                id: format!("pending_{}", i),
+                digest: [i as u8; 32],
+                status: DbStampStatus::Pending,
+                submitted_at: 1000 + i as i64,
+                confirmed_at: None,
+                proof: None,
+                batch_mode: "Standard".to_string(),
+            })
+            .await
+            .unwrap();
+        }
+        // One already-confirmed row must NOT be returned as pending.
+        db.save_stamp(&DbStampRecord {
+            id: "done".to_string(),
+            digest: [9u8; 32],
+            status: DbStampStatus::Confirmed,
+            submitted_at: 2000,
+            confirmed_at: Some(2001),
+            proof: Some(vec![1, 2, 3]),
+            batch_mode: "Instant".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let pending = db.get_stamps_by_status(DbStampStatus::Pending).await.unwrap();
+        assert_eq!(pending.len(), 3);
+        assert!(pending.iter().all(|r| r.status == DbStampStatus::Pending));
     }
 }
