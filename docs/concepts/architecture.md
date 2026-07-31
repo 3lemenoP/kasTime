@@ -100,10 +100,13 @@ Browser-compatible WASM module enabling:
 Full-featured CLI tool supporting:
 
 - `stamp` - Create timestamps (calendar or direct)
-- `verify` - Verify proofs
-- `info` - Display proof information
-- `upgrade` - Upgrade pending proofs
+- `verify` - Verify proofs (offline, or on-chain with `--chain`)
+- `info` / `status` - Display proof information and status
+- `complete` (alias `upgrade`) - Complete pending proofs
+- `hash` - Compute a file's SHA256
 - `wallet` - Wallet management
+- `config` - Manage the TOML config file
+- `completions` - Generate shell completions
 
 ### Web Frontend (src/)
 
@@ -309,7 +312,8 @@ CREATE INDEX idx_stamps_submitted_at ON stamps(submitted_at);
 - **Build**: Vite 5
 - **Styling**: Tailwind CSS 4
 - **State**: Zustand
-- **Data Fetching**: TanStack Query
+- **Routing**: React Router
+- **Data Fetching**: native `fetch` + WebSocket
 
 ### WASM
 - **Bindings**: wasm-bindgen

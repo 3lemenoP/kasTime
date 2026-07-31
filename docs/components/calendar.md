@@ -43,16 +43,17 @@ Configure via environment variables. Copy `.env.example` to `.env`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `sqlite:ktcs-calendar.db` | SQLite connection URL |
+| `DATABASE_URL` | `sqlite:ktcs-calendar.db?mode=rwc` | SQLite connection URL. `?mode=rwc` is required so sqlx creates the file on a fresh install |
 
 ### Server
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BIND_ADDRESS` | `0.0.0.0:3001` | Listen address |
+| `BIND_ADDRESS` | `0.0.0.0:3001` | Listen address (the code reads `BIND_ADDRESS`, not `PORT`) |
 | `KTCS_PUBLIC_URL` | `http://{BIND_ADDRESS}` | Public URL for proof URLs |
 | `CORS_ORIGINS` | `*` | Allowed origins (comma-separated) |
-| `KTCS_ENVIRONMENT` | `development` | Environment: development, testing, production |
+| `KTCS_ENVIRONMENT` | `development` | Environment: `development`, `testing`, or `production` |
+| `TRUST_PROXY` | `false` | Trust proxy headers for the client IP. Set `true` only behind a reverse proxy you control; the client IP is then taken from `X-Real-IP` / the rightmost `X-Forwarded-For` entry |
 
 ### Kaspa Network
 
@@ -83,10 +84,15 @@ For sustainable operation, configure a RETURN wallet that receives change and re
 
 ### Rate Limiting
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RATE_LIMIT_PER_SECOND` | `100` | Requests per second per IP |
-| `RATE_LIMIT_BURST` | `200` | Burst allowance |
+The shipped production config (`.env.production.template`, mirrored by
+`deploy/nginx/ktcs.conf`) enforces **10 requests/second per IP, burst 50** —
+the effective production limit. If unset, the in-code governor default is
+higher, but production sets these explicitly:
+
+| Variable | Production value | Description |
+|----------|------------------|-------------|
+| `RATE_LIMIT_PER_SECOND` | `10` | Requests per second per IP |
+| `RATE_LIMIT_BURST` | `50` | Burst allowance |
 | `MAX_BODY_SIZE` | `10485760` | Max request body (10 MB) |
 
 ### Authentication
@@ -94,10 +100,13 @@ For sustainable operation, configure a RETURN wallet that receives change and re
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `API_KEY` | - | API key (min 16 characters) |
-| `REQUIRE_API_KEY` | `false` | Require API key for write ops |
+| `REQUIRE_API_KEY` | `false` | Require an API key for the write endpoint |
 
 !!! note
     `REQUIRE_API_KEY=true` is enforced when `KTCS_ENVIRONMENT=production`.
+    When enabled, the key guards **only** `POST /v1/stamp`. Reads
+    (`GET /v1/stamp/:id`), `POST /v1/verify`, the `GET /v1/stream` WebSocket,
+    and `GET /health` remain public.
 
 ### Transaction Settings
 
@@ -105,7 +114,6 @@ For sustainable operation, configure a RETURN wallet that receives change and re
 |----------|---------|-------------|
 | `FEE_PER_GRAM` | `1` | Fee rate (sompi per gram) |
 | `CONFIRMATION_TIMEOUT_MS` | `60000` | TX confirmation timeout |
-| `KTCS_INCLUDE_MAGIC` | `false` | Include KTCS magic prefix in commitment |
 
 ### Testing
 

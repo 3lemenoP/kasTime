@@ -4,26 +4,36 @@ This document describes the REST and WebSocket APIs for the KTCS Calendar Server
 
 ## Base URL
 
+There is no public hosted calendar. Operators run their own; point clients at
+whatever host they deploy. Examples below use a placeholder:
+
 ```
-Production: https://calendar.ktcs.kaspa.org
+Production: https://your-calendar.example.com   (host you deploy)
 Development: http://localhost:3001
 ```
 
+> The host `your-calendar.example.com` used in older docs is **not** a live
+> service.
+
 ## Authentication
 
-If the server is configured with `REQUIRE_API_KEY=true`, include the API key in all requests:
+The API key guards **only** the write endpoint `POST /v1/stamp`, and only when
+the server is configured with `REQUIRE_API_KEY=true`. Include it on that
+request:
 
 ```http
 X-API-Key: your-api-key-here
 ```
 
-The health endpoint (`GET /health`) does not require authentication.
+`GET /v1/stamp/:id`, `POST /v1/verify`, the `GET /v1/stream` WebSocket, and
+`GET /health` are **public** and never require authentication.
 
 ## Rate Limiting
 
-Default limits (configurable):
-- **Requests per second**: 100 per IP
-- **Burst**: 200 requests
+The effective production limit (set by `.env.production.template` and mirrored
+in nginx) is:
+- **Requests per second**: 10 per IP
+- **Burst**: 50 requests
 
 When rate limited, you'll receive:
 ```http
@@ -100,7 +110,6 @@ Get the status of a stamp and retrieve the proof.
 
 ```http
 GET /v1/stamp/ktcs_a1b2c3d4e5f6g7h8 HTTP/1.1
-X-API-Key: your-key-here
 ```
 
 **Response (confirmed):**
@@ -157,7 +166,6 @@ X-API-Key: your-key-here
 
 | Status | Cause |
 |--------|-------|
-| 401 | Missing or invalid API key |
 | 404 | Stamp ID not found |
 
 ---
@@ -171,7 +179,6 @@ Verify a proof file.
 ```http
 POST /v1/verify HTTP/1.1
 Content-Type: application/octet-stream
-X-API-Key: your-key-here
 
 [binary .kts proof file bytes]
 ```
@@ -223,7 +230,6 @@ X-API-Key: your-key-here
 |--------|-------|
 | 400 | Invalid proof format |
 | 400 | Proof verification failed |
-| 401 | Missing or invalid API key |
 | 413 | Request body too large |
 
 ---
@@ -257,14 +263,14 @@ Real-time confirmation notifications.
 ### Endpoint
 
 ```
-wss://calendar.ktcs.kaspa.org/v1/stream
+wss://your-calendar.example.com/v1/stream
 ws://localhost:3001/v1/stream (development)
 ```
 
 ### Connection
 
 ```javascript
-const ws = new WebSocket('wss://calendar.ktcs.kaspa.org/v1/stream');
+const ws = new WebSocket('wss://your-calendar.example.com/v1/stream');
 
 ws.onopen = () => {
   console.log('Connected');
@@ -407,7 +413,7 @@ Error message.
 ### Example: Complete Flow
 
 ```javascript
-const ws = new WebSocket('wss://calendar.ktcs.kaspa.org/v1/stream');
+const ws = new WebSocket('wss://your-calendar.example.com/v1/stream');
 
 ws.onopen = () => {
   // Subscribe to a pending proof
@@ -546,29 +552,27 @@ class CalendarClient {
 
 **Submit a stamp:**
 ```bash
-curl -X POST https://calendar.ktcs.kaspa.org/v1/stamp \
+curl -X POST https://your-calendar.example.com/v1/stamp \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-key" \
   -d '{"digest":"abc123...","batch_mode":"standard"}'
 ```
 
-**Get stamp status:**
+**Get stamp status:** (public — no API key)
 ```bash
-curl https://calendar.ktcs.kaspa.org/v1/stamp/ktcs_abc123 \
-  -H "X-API-Key: your-key"
+curl https://your-calendar.example.com/v1/stamp/ktcs_abc123
 ```
 
-**Verify a proof:**
+**Verify a proof:** (public — no API key)
 ```bash
-curl -X POST https://calendar.ktcs.kaspa.org/v1/verify \
+curl -X POST https://your-calendar.example.com/v1/verify \
   -H "Content-Type: application/octet-stream" \
-  -H "X-API-Key: your-key" \
   --data-binary @document.kts
 ```
 
 **Health check:**
 ```bash
-curl https://calendar.ktcs.kaspa.org/health
+curl https://your-calendar.example.com/health
 ```
 
 ---

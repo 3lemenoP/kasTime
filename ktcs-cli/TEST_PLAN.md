@@ -1,24 +1,35 @@
 # KTCS-CLI Test Plan & Coverage Report
 
-## Implementation Status: COMPLETE
+## Test Status
 
-**Total Tests: 130**
-- Unit tests (main.rs): 36
+**Total tests: 130**, split into:
+- Unit tests (`main.rs`): 36
 - CLI basic tests: 29
 - Config tests: 17
 - Error handling tests: 23
 - Network mock tests (wiremock): 17
-- Live network tests: 8 (run with `--ignored`, hit real Kaspa mainnet)
+- Live network tests: 8, each marked `#[ignore]`
 
-**All tests passing.**
+**The hermetic suites (unit, basic, config, error, and wiremock mock tests)
+pass** under `cargo test -p ktcs-cli`; they run with no network access.
+
+**The 8 live-network tests are `#[ignore]` by default** and are only run
+explicitly with `-- --ignored`. They require network connectivity to a real
+Kaspa node (and the direct-stamp test can consume KAS), so they are not part of
+the default or CI run.
+
+> The live suite previously invoked flags that did not exist (e.g. a
+> `--format json` flag on `wallet balance`); those argument errors have been
+> corrected, so the live tests now match the actual CLI surface. The remaining
+> gate on them is network/funds, not argument parsing.
 
 ### Running Tests
 
 ```bash
-# Run all standard tests (excludes live network tests)
+# Run all hermetic tests (excludes the #[ignore] live-network tests)
 cargo test -p ktcs-cli
 
-# Run live network tests (requires network, may consume KAS for direct stamp)
+# Run the live-network tests explicitly (requires network; may consume KAS)
 cargo test -p ktcs-cli --test cli_live_network -- --ignored
 ```
 

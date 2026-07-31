@@ -49,8 +49,14 @@ Create your first timestamp in under 5 minutes.
     ### 2. Stamp a File
 
     ```bash
-    ktcs stamp document.pdf
+    ktcs stamp --calendar https://your-calendar.example.com document.pdf
     ```
+
+    !!! warning "Configure a calendar (or use --direct)"
+        There is no public calendar service, and the built-in default host is
+        not live. Point `--calendar` (or `KTCS_CALENDAR_URL` / the config file)
+        at a calendar you run, or skip the calendar entirely with the
+        Direct Stamping path below.
 
     Output:
     ```
@@ -144,12 +150,12 @@ if (result.valid) {
 
 ## Common Tasks
 
-### Upgrade a Pending Proof
+### Complete a Pending Proof
 
-If you have a pending proof (confirmation in progress):
+If you have a pending proof (e.g. from `ktcs stamp --async`):
 
 ```bash
-ktcs upgrade document.kts
+ktcs complete document.kts   # `ktcs upgrade` is an alias
 ```
 
 ### Get Proof Information

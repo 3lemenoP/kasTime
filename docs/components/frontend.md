@@ -11,9 +11,10 @@ React/TypeScript web interface for KTCS timestamping.
 | Vite | 5.0 | Build tool |
 | Tailwind CSS | 4.0 | Styling |
 | Zustand | 4.4 | State management |
-| TanStack Query | 5.0 | Data fetching |
-| D3.js | 7.8 | DAG visualization |
+| React Router | 6.20 | Client-side routing |
 | Framer Motion | 10.16 | Animations |
+| react-markdown + remark-gfm | 10 / 4 | In-app docs rendering (`DocsPage`) |
+| lucide-react | 0.300 | Icons |
 
 ## Development
 
@@ -52,8 +53,6 @@ src/
 │   ├── ui/                # Reusable UI components
 │   │   ├── Button.tsx
 │   │   ├── FileDropZone.tsx
-│   │   ├── MetricCard.tsx
-│   │   ├── ThermodynamicGauge.tsx
 │   │   └── WalletInput.tsx
 │   ├── proof/             # Proof-related components
 │   │   ├── BlockAttestation.tsx
@@ -65,7 +64,8 @@ src/
 ├── pages/                  # Page components
 │   ├── HomePage.tsx       # Stamp creation
 │   ├── ProofPage.tsx      # Proof display
-│   └── VerifyPage.tsx     # Verification
+│   ├── VerifyPage.tsx     # Verification
+│   └── DocsPage.tsx       # Bundled documentation
 ├── stores/                 # Zustand stores
 │   └── stamp.ts           # Stamp state
 ├── types/                  # TypeScript types
@@ -147,8 +147,8 @@ Dark UI theme:
 
 - `Button` - Primary and secondary variants
 - `FileDropZone` - File upload with drag states
-- `MetricCard` - Display stats and metrics
 - `WalletInput` - Secure key input (type=password)
+- `proof/BlockAttestation`, `proof/ConfirmationHero` - Proof/confirmation display
 
 ## WASM Integration
 
@@ -259,10 +259,13 @@ Output in `dist/`. Deploy to any static hosting:
 
 ## Security
 
-- **Files never uploaded** - All hashing happens client-side
-- **Private keys** - Only enter when using direct stamping
-- **Keys stay in browser** - Never sent to calendar server
-- **WASM memory** - Keys handled in WASM, not JS heap
+- **Files never uploaded** - All hashing happens client-side.
+- **Private keys** - Only entered when using direct stamping.
+- **Keys are not sent to the calendar server** and are not persisted to storage.
+- **Raw keys DO live on the JS heap.** A key pasted for direct stamping is a
+  JavaScript string in React/zustand state; the WASM code zeroizes its own
+  copies but cannot scrub the JS-held ones. Treat raw-key direct stamping as at
+  your own risk — prefer calendar mode or a low-value throwaway wallet.
 
 ## See Also
 

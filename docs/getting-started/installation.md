@@ -62,7 +62,7 @@ This guide covers installing KTCS components for different use cases.
 
 | Requirement | Version | Purpose |
 |-------------|---------|---------|
-| Rust | 1.70+ | Compiler |
+| Rust | 1.78+ | Compiler (required for the committed `Cargo.lock` v4) |
 | Cargo | Latest | Package manager |
 
 Install Rust:
