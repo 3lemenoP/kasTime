@@ -936,4 +936,255 @@ mod tests {
             assert!(res.is_err(), "sighash type {:?} should be rejected", ty);
         }
     }
+
+    // ============================================================
+    // Known-Answer Tests (KATs) cross-verified against rusty-kaspa
+    // ============================================================
+    //
+    // These vectors pin KTCS's consensus-critical crypto (the Kaspa address
+    // codec and the transaction sighash) to authoritative values produced by
+    // the reference implementation, rusty-kaspa. They were fetched from
+    // rusty-kaspa's own test suites during development and hard-coded here so
+    // the tests remain hermetic (no network access at test time).
+    //
+    // Provenance:
+    //   Address codec:
+    //     https://github.com/kaspanet/rusty-kaspa/blob/master/crypto/addresses/src/lib.rs
+    //     (module `tests`, function `cases()` — the (Prefix, Version, payload)
+    //      -> address-string table)
+    //     Encoding algorithm reference (version byte is prepended to the payload
+    //     BYTES and then converted 8->5 together — matching KTCS):
+    //     https://github.com/kaspanet/rusty-kaspa/blob/master/crypto/addresses/src/bech32.rs
+    //   Sighash:
+    //     https://github.com/kaspanet/rusty-kaspa/blob/master/consensus/core/src/hashing/sighash.rs
+    //     (module `tests`, function `test_signature_hash` — which itself derives
+    //      from the go-kaspad sighash test vectors)
+
+    /// CROSS-VERIFIED (encode): feed the exact 32-byte x-only pubkey payload
+    /// from rusty-kaspa's mainnet `Version::PubKey` vector through KTCS's real
+    /// `encode_address` and assert the produced string is byte-for-byte equal to
+    /// rusty-kaspa's expected address.
+    ///
+    /// rusty-kaspa vector:
+    ///   Address::new(Prefix::Mainnet, Version::PubKey,
+    ///       b"\x5f\xff\x3c\x4d\xa1\x8f\x45\xad\xcd\xd4\x99\xe4\x46\x11\xe9\xff\
+    ///         \xf1\x48\xba\x69\xdb\x3c\x4e\xa2\xdd\xd9\x55\xfc\x46\xa5\x95\x22")
+    ///   => "kaspa:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jyqh70xmfj"
+    ///
+    /// (The payload `5fff3c4d...` is a valid secp256k1 x-coordinate, so it can be
+    /// parsed as a real `XOnlyPublicKey` and driven through the real code path.)
+    #[test]
+    fn kat_encode_address_mainnet_pubkey_cross_verified() {
+        let payload =
+            hex::decode("5fff3c4da18f45adcdd499e44611e9fff148ba69db3c4ea2ddd955fc46a59522")
+                .unwrap();
+        let pk = XOnlyPublicKey::from_slice(&payload).expect("valid secp256k1 x-only pubkey");
+
+        let addr = encode_address(&pk, "mainnet").unwrap();
+        assert_eq!(
+            addr,
+            "kaspa:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jyqh70xmfj",
+            "KTCS encode_address diverged from rusty-kaspa mainnet PubKey vector"
+        );
+
+        // "kaspa" alias must produce the same address as "mainnet".
+        assert_eq!(encode_address(&pk, "kaspa").unwrap(), addr);
+    }
+
+    /// CROSS-VERIFIED (decode): feed rusty-kaspa's authoritative address strings
+    /// through KTCS's real `decode_address` and assert the recovered prefix and
+    /// 32-byte payload match. Covers both the all-zero payload vectors (which are
+    /// not valid curve points, so they can only be exercised on the decode side)
+    /// and the real-pubkey vector, and both the mainnet and testnet prefixes.
+    ///
+    /// rusty-kaspa vectors:
+    ///   (Mainnet, PubKey, [0u8;32]) => "kaspa:qqqq...kx9awp4e"
+    ///   (Testnet, PubKey, [0u8;32]) => "kaspatest:qqqq...hqrxplya"
+    ///   (Mainnet, PubKey, 5fff3c4d...) => "kaspa:qp0l70zd...qh70xmfj"
+    #[test]
+    fn kat_decode_address_cross_verified() {
+        // mainnet, all-zero PubKey payload
+        let (hrp, payload) = decode_address(
+            "kaspa:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkx9awp4e",
+        )
+        .unwrap();
+        assert_eq!(hrp, "kaspa");
+        assert_eq!(payload, vec![0u8; 32]);
+
+        // testnet, all-zero PubKey payload
+        let (hrp, payload) = decode_address(
+            "kaspatest:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqhqrxplya",
+        )
+        .unwrap();
+        assert_eq!(hrp, "kaspatest");
+        assert_eq!(payload, vec![0u8; 32]);
+
+        // mainnet, real x-only pubkey payload
+        let (hrp, payload) = decode_address(
+            "kaspa:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jyqh70xmfj",
+        )
+        .unwrap();
+        assert_eq!(hrp, "kaspa");
+        assert_eq!(
+            hex::encode(payload),
+            "5fff3c4da18f45adcdd499e44611e9fff148ba69db3c4ea2ddd955fc46a59522"
+        );
+    }
+
+    /// STRUCTURAL / round-trip (not a KAT): a real pubkey encoded by KTCS must
+    /// decode back to the same pubkey, and re-encoding the decoded payload must
+    /// reproduce the identical string, for both the mainnet and testnet prefixes.
+    /// The mainnet leg is additionally anchored to the rusty-kaspa string above.
+    #[test]
+    fn kat_address_round_trip() {
+        let payload =
+            hex::decode("5fff3c4da18f45adcdd499e44611e9fff148ba69db3c4ea2ddd955fc46a59522")
+                .unwrap();
+        let pk = XOnlyPublicKey::from_slice(&payload).expect("valid secp256k1 x-only pubkey");
+
+        for (network, expected_prefix) in [("mainnet", "kaspa"), ("testnet", "kaspatest")] {
+            let addr = encode_address(&pk, network).unwrap();
+            let (hrp, decoded) = decode_address(&addr).unwrap();
+            assert_eq!(hrp, expected_prefix);
+            assert_eq!(decoded, payload, "round-trip payload mismatch on {}", network);
+            // Re-encoding must be idempotent: the decoded payload IS the pubkey.
+            let re_pk = XOnlyPublicKey::from_slice(&decoded).unwrap();
+            assert_eq!(encode_address(&re_pk, network).unwrap(), addr);
+        }
+    }
+
+    /// Build the shared transaction used by rusty-kaspa's `test_signature_hash`
+    /// (the `native_tx` / `native_populated_tx` pair). All hashes below are for
+    /// signing input 0 with SIG_HASH_ALL, the only sighash type KTCS implements.
+    fn sighash_kat_base_tx() -> SighashTransaction {
+        let mut prev = [0u8; 32];
+        prev.copy_from_slice(
+            &hex::decode("880eb9819a31821d9d2399e2f35e2433b72637e393d71ecc9b8d0250f49153c3")
+                .unwrap(),
+        );
+        // 34-byte P2PK scripts from the rusty-kaspa vector (script_pub_key_1/2).
+        let spk1 =
+            hex::decode("208325613d2eeaf7176ac6c670b13c0043156c427438ed72d74b7800862ad884e8ac")
+                .unwrap();
+        let spk2 =
+            hex::decode("20fcef4c106cf11135bbd70f02a726a92162d2fb8b22f0469126f800862ad884e8ac")
+                .unwrap();
+
+        SighashTransaction {
+            version: 0,
+            inputs: vec![
+                // (outpoint index, sequence) from tx.inputs; (script, value) from
+                // the matching UtxoEntry being spent.
+                SighashInput {
+                    previous_outpoint_hash: prev,
+                    previous_outpoint_index: 0,
+                    script_public_key_version: 0,
+                    script_public_key: spk1.clone(),
+                    value: 100,
+                    sequence: 0,
+                    sig_op_count: 0,
+                },
+                SighashInput {
+                    previous_outpoint_hash: prev,
+                    previous_outpoint_index: 1,
+                    script_public_key_version: 0,
+                    script_public_key: spk2.clone(),
+                    value: 200,
+                    sequence: 1,
+                    sig_op_count: 0,
+                },
+                SighashInput {
+                    previous_outpoint_hash: prev,
+                    previous_outpoint_index: 2,
+                    script_public_key_version: 0,
+                    script_public_key: spk2.clone(),
+                    value: 300,
+                    sequence: 2,
+                    sig_op_count: 0,
+                },
+            ],
+            outputs: vec![
+                SighashOutput {
+                    value: 300,
+                    script_public_key_version: 0,
+                    script_public_key: spk2.clone(),
+                },
+                SighashOutput {
+                    value: 300,
+                    script_public_key_version: 0,
+                    script_public_key: spk1.clone(),
+                },
+            ],
+            lock_time: 1615462089000,
+            subnetwork_id: [0u8; 20],
+            gas: 0,
+            payload: vec![],
+        }
+    }
+
+    /// CROSS-VERIFIED (sighash): reproduce rusty-kaspa's SIG_HASH_ALL sighash
+    /// vectors exactly. Each expected value is copied verbatim from
+    /// `test_signature_hash` in rusty-kaspa's `sighash.rs`. rusty-kaspa's
+    /// `Hash::to_string()` prints the 32 hash bytes in natural (un-reversed)
+    /// order, which is the same byte order KTCS returns, so a plain `hex::encode`
+    /// of KTCS's output is directly comparable.
+    #[test]
+    fn kat_sighash_all_cross_verified() {
+        // native-all-0
+        let tx = sighash_kat_base_tx();
+        assert_eq!(
+            hex::encode(compute_kaspa_sighash(&tx, 0, SigHashType::All).unwrap()),
+            "03b7ac6927b2b67100734c3cc313ff8c2e8b3ce3e746d46dd660b706a916b1f5",
+            "native-all-0 diverged from rusty-kaspa"
+        );
+
+        // native-all-0-modify-input-1: tx.inputs[1].previous_outpoint.index = 2
+        let mut tx = sighash_kat_base_tx();
+        tx.inputs[1].previous_outpoint_index = 2;
+        assert_eq!(
+            hex::encode(compute_kaspa_sighash(&tx, 0, SigHashType::All).unwrap()),
+            "a9f563d86c0ef19ec2e4f483901d202e90150580b6123c3d492e26e7965f488c",
+            "native-all-0-modify-input-1 diverged from rusty-kaspa"
+        );
+
+        // native-all-0-modify-output-1: tx.outputs[1].value = 100
+        let mut tx = sighash_kat_base_tx();
+        tx.outputs[1].value = 100;
+        assert_eq!(
+            hex::encode(compute_kaspa_sighash(&tx, 0, SigHashType::All).unwrap()),
+            "aad2b61bd2405dfcf7294fc2be85f325694f02dda22d0af30381cb50d8295e0a",
+            "native-all-0-modify-output-1 diverged from rusty-kaspa"
+        );
+
+        // native-all-0-modify-sequence-1: tx.inputs[1].sequence = 12345
+        let mut tx = sighash_kat_base_tx();
+        tx.inputs[1].sequence = 12345;
+        assert_eq!(
+            hex::encode(compute_kaspa_sighash(&tx, 0, SigHashType::All).unwrap()),
+            "0818bd0a3703638d4f01014c92cf866a8903cab36df2fa2506dc0d06b94295e8",
+            "native-all-0-modify-sequence-1 diverged from rusty-kaspa"
+        );
+
+        // native-all-0-modify-payload: tx.payload = [6,6,6,4,2,0,1,3,3,7]
+        // (subnetwork stays native, so payload_hash is now a non-zero hash of the
+        //  length-prefixed payload).
+        let mut tx = sighash_kat_base_tx();
+        tx.payload = vec![6, 6, 6, 4, 2, 0, 1, 3, 3, 7];
+        assert_eq!(
+            hex::encode(compute_kaspa_sighash(&tx, 0, SigHashType::All).unwrap()),
+            "72ea6c2871e0f44499f1c2b556f265d9424bfea67cca9cb343b4b040ead65525",
+            "native-all-0-modify-payload diverged from rusty-kaspa"
+        );
+
+        // subnetwork-all-0: non-native subnetwork id, gas = 250, payload = [10..=20]
+        let mut tx = sighash_kat_base_tx();
+        tx.subnetwork_id = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        tx.gas = 250;
+        tx.payload = vec![10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+        assert_eq!(
+            hex::encode(compute_kaspa_sighash(&tx, 0, SigHashType::All).unwrap()),
+            "b2f421c933eb7e1a91f1d9e1efa3f120fe419326c0dbac487752189522550e0c",
+            "subnetwork-all-0 diverged from rusty-kaspa"
+        );
+    }
 }
