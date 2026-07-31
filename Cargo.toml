@@ -12,7 +12,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["KTCS Contributors"]
 license = "MIT"
-repository = "https://github.com/example/ktcs"
+repository = "https://github.com/3lemenoP/kasTime"
 
 [workspace.dependencies]
 # Cryptography
