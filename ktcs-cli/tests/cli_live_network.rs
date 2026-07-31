@@ -76,7 +76,7 @@ fn test_wallet_balance_with_funded_address() {
             "balance",
             "--address",
             &address,
-            "--rpc-url",
+            "--rpc",
             &rpc_url,
         ])
         .output()
@@ -129,7 +129,7 @@ fn test_wallet_balance_with_wallet_file() {
             "balance",
             "--wallet-file",
             wallet_file.path().to_str().unwrap(),
-            "--rpc-url",
+            "--rpc",
             &rpc_url,
         ])
         .output()
@@ -151,7 +151,9 @@ fn test_wallet_balance_with_wallet_file() {
 
 #[test]
 #[ignore = "Requires network - run with --ignored"]
-fn test_wallet_balance_json_output() {
+fn test_wallet_balance_with_explicit_rpc() {
+    // `wallet balance` has no `--format json` flag; this exercises the real
+    // `--rpc` flag and asserts human-readable balance output.
     let address = get_wallet_address();
     let rpc_url = get_rpc_url();
 
@@ -162,19 +164,19 @@ fn test_wallet_balance_json_output() {
             "balance",
             "--address",
             &address,
-            "--rpc-url",
+            "--rpc",
             &rpc_url,
-            "--format",
-            "json",
         ])
         .output()
         .unwrap();
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // Should be valid JSON
-        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
-        assert!(parsed.is_ok(), "Expected valid JSON, got: {}", stdout);
+        assert!(
+            stdout.contains("KAS") || stdout.chars().any(|c| c.is_numeric()),
+            "Expected balance output, got: {}",
+            stdout
+        );
     }
 }
 
@@ -390,7 +392,7 @@ fn test_full_direct_stamp_and_verify_workflow() {
         .unwrap()
         .args([
             "verify",
-            "--file",
+            "--data",
             file.path().to_str().unwrap(),
             proof_file.path().to_str().unwrap(),
         ])
@@ -405,7 +407,7 @@ fn test_full_direct_stamp_and_verify_workflow() {
             "--chain",
             "--rpc-url",
             &rpc_url,
-            "--file",
+            "--data",
             file.path().to_str().unwrap(),
             proof_file.path().to_str().unwrap(),
         ])
@@ -442,7 +444,7 @@ fn test_rpc_connection_works() {
             "balance",
             "--address",
             &address,
-            "--rpc-url",
+            "--rpc",
             &rpc_url,
         ])
         .timeout(std::time::Duration::from_secs(30))
