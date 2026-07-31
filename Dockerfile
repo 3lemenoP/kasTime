@@ -18,9 +18,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy workspace manifests first for dependency caching
-# Note: Cargo.lock is in .gitignore; if missing, cargo generates it during build
-COPY Cargo.toml Cargo.lock* ./
+# Copy workspace manifests first for dependency caching.
+# Cargo.lock is now committed/tracked and NOT excluded by .dockerignore, so the
+# build consumes the pinned lockfile (see --locked below) for reproducibility.
+COPY Cargo.toml Cargo.lock ./
 COPY ktcs-core/Cargo.toml ktcs-core/Cargo.toml
 COPY ktcs-cli/Cargo.toml ktcs-cli/Cargo.toml
 COPY ktcs-calendar/Cargo.toml ktcs-calendar/Cargo.toml
@@ -34,7 +35,7 @@ RUN mkdir -p ktcs-core/src ktcs-cli/src ktcs-calendar/src ktcs-wasm/src && \
     echo "" > ktcs-wasm/src/lib.rs
 
 # Build dependencies (this layer is cached unless Cargo.toml/lock changes)
-RUN cargo build --release -p ktcs-calendar 2>/dev/null || true
+RUN cargo build --release --locked -p ktcs-calendar 2>/dev/null || true
 
 # Copy actual source code
 COPY ktcs-core/src ktcs-core/src
@@ -43,8 +44,8 @@ COPY ktcs-calendar/src ktcs-calendar/src
 # Touch main files to invalidate the dummy builds
 RUN touch ktcs-core/src/lib.rs ktcs-calendar/src/main.rs
 
-# Build the actual binary
-RUN cargo build --release -p ktcs-calendar
+# Build the actual binary (--locked enforces the committed Cargo.lock)
+RUN cargo build --release --locked -p ktcs-calendar
 
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime image

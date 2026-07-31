@@ -12,7 +12,7 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Rust: build and test
+  # Rust: format, lint, build and test
   # ---------------------------------------------------------------------------
   rust:
     name: Rust Build & Test
@@ -22,6 +22,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
@@ -30,17 +32,88 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
+          # Cargo.lock is now tracked (see .gitignore), so this key is
+          # meaningful and busts the cache only when dependencies change.
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      # Formatting gate. Formatting is normalized repo-wide separately; this
+      # step keeps it that way.
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # Clippy is INFORMATIONAL for now: run without `-D warnings` so CI does
+      # not fail on pre-existing lint warnings that are being cleaned up
+      # separately. ktcs-wasm is excluded (built in the dedicated wasm job).
+      # TODO: promote to `-D warnings` once the workspace is clippy-clean.
+      - name: Clippy (informational)
+        run: cargo clippy --workspace --all-targets --exclude ktcs-wasm
+
       - name: Build
-        run: cargo build --release -p ktcs-core -p ktcs-calendar -p ktcs-cli
+        # --locked ensures the committed Cargo.lock is used verbatim
+        # (reproducible builds); fails if the lockfile is stale.
+        run: cargo build --release --locked -p ktcs-core -p ktcs-calendar -p ktcs-cli
 
       - name: Test
+        # Default test run skips #[ignore]d tests, so the live-network
+        # ktcs-core integration tests (marked #[ignore] elsewhere) do not run
+        # in CI. Do NOT add --include-ignored here.
         run: cargo test --workspace --exclude ktcs-wasm
 
   # ---------------------------------------------------------------------------
-  # Frontend: build and lint
+  # WASM: actually compile the browser bindings (previously never built in CI)
+  # ---------------------------------------------------------------------------
+  wasm:
+    name: WASM Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (wasm target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-wasm-
+
+      - name: Install wasm-pack
+        # Official prebuilt installer (fast; avoids compiling wasm-pack from
+        # source). Alternative: `cargo install wasm-pack` (heavier).
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM bindings
+        # This is the real gate: the browser artifact must compile in CI.
+        run: wasm-pack build ktcs-wasm --target web --out-dir pkg
+
+      # INFORMATIONAL drift check: the committed browser artifact lives in
+      # src/wasm/. wasm-bindgen output is not guaranteed byte-identical across
+      # toolchain/wasm-pack versions, so this step is non-blocking — it only
+      # flags when the committed src/wasm/ may be stale relative to a fresh
+      # build. Regenerate with:
+      #   wasm-pack build ktcs-wasm --target web --out-dir ../src/wasm
+      - name: Check committed src/wasm/ for drift (informational)
+        continue-on-error: true
+        run: |
+          echo "Comparing freshly built bindings against committed src/wasm/ ..."
+          for f in ktcs_wasm.js ktcs_wasm.d.ts ktcs_wasm_bg.wasm.d.ts; do
+            if ! diff -q "ktcs-wasm/pkg/$f" "src/wasm/$f" >/dev/null 2>&1; then
+              echo "::warning::src/wasm/$f differs from a fresh wasm-pack build (possible drift)"
+            fi
+          done
+          if ! cmp -s ktcs-wasm/pkg/ktcs_wasm_bg.wasm src/wasm/ktcs_wasm_bg.wasm; then
+            echo "::warning::src/wasm/ktcs_wasm_bg.wasm differs from a fresh build (expected across toolchain versions; verify intentionally)"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Frontend: lint, type-check and build
   # ---------------------------------------------------------------------------
   frontend:
     name: Frontend Build
@@ -57,12 +130,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
       - name: Type check
         run: npx tsc -b
 
       - name: Build
         run: npm run build
         env:
+          # /api is the Docker/compose convention (nginx proxies /api/ ->
+          # calendar). See docker-compose.yml and deploy/nginx/frontend.conf.
           VITE_CALENDAR_URL: /api
 
   # ---------------------------------------------------------------------------
@@ -71,7 +149,7 @@ jobs:
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
-    needs: [rust, frontend]
+    needs: [rust, wasm, frontend]
     if: github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4

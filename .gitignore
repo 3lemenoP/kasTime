@@ -53,4 +53,7 @@ ktcs-calendar/data/*.db
 *.local
 *.rlib
 target/
-Cargo.lock
+
+# NOTE: Cargo.lock is intentionally TRACKED (not ignored). This repo's primary
+# artifacts are binaries (ktcs-cli, ktcs-calendar), so a committed lockfile is
+# required for reproducible builds across CI, Docker, and host toolchains.
