@@ -65,8 +65,11 @@ impl Resolver {
     pub async fn get_url(&self, network: &str, encoding: &str) -> Result<String> {
         // First, try the direct PNN WebSocket endpoint format
         // The PNN uses paths like: /wrpc/{network}/{encoding}
-        let ws_url = format!("wss://{}/wrpc/{}/{}",
-            self.pnn_url.trim_start_matches("https://").trim_start_matches("http://"),
+        let ws_url = format!(
+            "wss://{}/wrpc/{}/{}",
+            self.pnn_url
+                .trim_start_matches("https://")
+                .trim_start_matches("http://"),
             network,
             encoding
         );
@@ -77,8 +80,11 @@ impl Resolver {
         }
 
         // Alternative format: /{encoding}/{network}
-        let alt_url = format!("wss://{}/{}/{}",
-            self.pnn_url.trim_start_matches("https://").trim_start_matches("http://"),
+        let alt_url = format!(
+            "wss://{}/{}/{}",
+            self.pnn_url
+                .trim_start_matches("https://")
+                .trim_start_matches("http://"),
             encoding,
             network
         );
@@ -148,13 +154,13 @@ impl Resolver {
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
-                .map_err(|e| KtcsError::ConnectionError(format!("Failed to create HTTP client: {}", e)))?;
+                .map_err(|e| {
+                    KtcsError::ConnectionError(format!("Failed to create HTTP client: {}", e))
+                })?;
 
-            let response = client
-                .get(&json_url)
-                .send()
-                .await
-                .map_err(|e| KtcsError::ConnectionError(format!("Failed to fetch PNN data: {}", e)))?;
+            let response = client.get(&json_url).send().await.map_err(|e| {
+                KtcsError::ConnectionError(format!("Failed to fetch PNN data: {}", e))
+            })?;
 
             if !response.status().is_success() {
                 return Err(KtcsError::ConnectionError(format!(
@@ -163,10 +169,9 @@ impl Resolver {
                 )));
             }
 
-            let nodes: Vec<PnnNode> = response
-                .json()
-                .await
-                .map_err(|e| KtcsError::ConnectionError(format!("Failed to parse PNN response: {}", e)))?;
+            let nodes: Vec<PnnNode> = response.json().await.map_err(|e| {
+                KtcsError::ConnectionError(format!("Failed to parse PNN response: {}", e))
+            })?;
 
             Ok(nodes)
         }
@@ -175,8 +180,8 @@ impl Resolver {
     /// Test if an endpoint is reachable
     #[cfg(feature = "kaspa-client")]
     async fn test_endpoint(&self, url: &str) -> bool {
-        use tokio_tungstenite::connect_async;
         use std::time::Duration;
+        use tokio_tungstenite::connect_async;
 
         let timeout = Duration::from_secs(5);
 

@@ -205,15 +205,17 @@ Full documentation is available at [kastime.xyz/docs](https://kastime.xyz/docs) 
 
 ## Security
 
-KTCS provides **zero-trust verification**:
+What KTCS does guarantee:
 
-- Anyone with a Kaspa node can independently verify any proof
-- Calendar servers cannot forge or backdate timestamps
-- Direct stamping requires no trusted third party
-- Private keys use `secrecy::Secret<T>` with zeroization on drop
-- API authentication with constant-time key comparison
+- Calendar servers **cannot forge or backdate** timestamps — anchoring requires real Kaspa proof-of-work.
+- Direct stamping requires **no trusted third party** — you build, sign, and submit the commitment yourself.
+- On-chain verification matches the commitment with an **exact P2PK burn-script** check against the attested transaction.
+- The calendar's API key is compared in **constant time** and guards the write endpoint (`POST /v1/stamp`); reads, verify, the WebSocket, and `/health` are public.
 
-See [Security Model](./docs/concepts/security.md) for the full threat model.
+Important caveats (see the [Security Model](./docs/concepts/security.md) for the full threat model):
+
+- **Offline verification does not prove chain inclusion.** `verify_proof` (and `ktcs verify` without `--chain`) confirms the proof is cryptographically and structurally consistent with a complete attestation, but a well-formed fabricated attestation still passes. Use `--chain` to check the block/transaction on a node — and on-chain verification is only as trustworthy as the node you query.
+- **Key zeroization is per-crate:** ktcs-core and ktcs-cli hold the secret key in a `Zeroizing` buffer; ktcs-calendar uses `secrecy::Secret`. In the browser, a raw key pasted for direct stamping lives on the JS heap and cannot be scrubbed by the WASM code — prefer calendar mode or a low-value wallet.
 
 ---
 
@@ -227,4 +229,4 @@ See [Security Model](./docs/concepts/security.md) for the full threat model.
 
 - [Live Demo — kastime.xyz](https://kastime.xyz)
 - [Kaspa](https://kaspa.org)
-- [Technical Specification](./kaspa-thermodynamic-clock-spec.md)
+- [Proof Format Specification](./docs/PROOF_FORMAT_SPECIFICATION.md)

@@ -4,7 +4,7 @@ This guide covers deploying the KTCS Calendar Server and related components.
 
 ## Prerequisites
 
-- **Rust**: 1.70 or later
+- **Rust**: 1.78 or later (required for the committed `Cargo.lock` v4)
 - **Node.js**: 18 or later (for frontend)
 - **Kaspa Node**: Local node or public RPC access
 - **SQLite**: Embedded (no separate installation)
@@ -15,7 +15,7 @@ This guide covers deploying the KTCS Calendar Server and related components.
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/kasTime.git
+git clone https://github.com/3lemenoP/kasTime.git
 cd kasTime
 
 # Build release binaries
@@ -62,7 +62,7 @@ cp ktcs-calendar/.env.example ktcs-calendar/.env
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `sqlite:./data/ktcs-calendar.db?mode=rwc` | SQLite connection URL |
+| `DATABASE_URL` | `sqlite:ktcs-calendar.db?mode=rwc` | SQLite connection URL. `?mode=rwc` is required so the DB file is created on a fresh install. In production, point it at your data dir, e.g. `sqlite:/opt/ktcs/data/ktcs-calendar.db?mode=rwc` |
 
 #### Kaspa Network Configuration
 
@@ -103,17 +103,24 @@ cp ktcs-calendar/.env.example ktcs-calendar/.env
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BIND_ADDRESS` | `0.0.0.0:3001` | Server bind address |
+| `BIND_ADDRESS` | `0.0.0.0:3001` | Server bind address (the code reads `BIND_ADDRESS`, not `PORT`) |
 | `KTCS_PUBLIC_URL` | `http://{BIND_ADDRESS}` | Public URL for proofs |
 | `CORS_ORIGINS` | `*` | Allowed origins (comma-separated) |
-| `KTCS_ENVIRONMENT` | `development` | `development`, `testing`, `production` |
+| `KTCS_ENVIRONMENT` | `development` | `development`, `testing`, or `production` |
+| `TRUST_PROXY` | `false` | Trust proxy headers for the client IP. Set `true` only behind a reverse proxy you control; the client IP is then taken from `X-Real-IP` / the rightmost `X-Forwarded-For` entry |
 
 #### Rate Limiting
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RATE_LIMIT_PER_SECOND` | `100` | Requests per second per IP |
-| `RATE_LIMIT_BURST` | `200` | Burst allowance |
+The shipped production configuration (`.env.production.template`, mirrored by
+the `deploy/nginx/ktcs.conf` `limit_req` zone) enforces **10 requests/second
+per IP with a burst of 50** — treat this as the effective production limit. (If
+these variables are left unset, the in-code app-level governor default is
+higher, but production deployments set them explicitly to the values below.)
+
+| Variable | Production value | Description |
+|----------|------------------|-------------|
+| `RATE_LIMIT_PER_SECOND` | `10` | Requests per second per IP |
+| `RATE_LIMIT_BURST` | `50` | Burst allowance |
 | `MAX_BODY_SIZE` | `10485760` | Max request body (10 MB) |
 
 #### Authentication
@@ -131,7 +138,6 @@ cp ktcs-calendar/.env.example ktcs-calendar/.env
 |----------|---------|-------------|
 | `FEE_PER_GRAM` | `1` | Fee rate in sompi per gram |
 | `CONFIRMATION_TIMEOUT_MS` | `60000` | TX confirmation timeout |
-| `KTCS_INCLUDE_MAGIC` | `true` | Include KTCS magic in output |
 
 #### Mode Configuration
 
@@ -347,8 +353,12 @@ VITE_KASPA_RPC=wss://resolver.kaspa.stream/wrpc/mainnet
 
 ### Dockerfile
 
+The repository ships a real `Dockerfile` at the root (based on
+`rust:slim-bookworm`, which provides Rust 1.78+). The snippet below is a
+minimal equivalent:
+
 ```dockerfile
-FROM rust:1.75-slim as builder
+FROM rust:slim-bookworm AS builder
 
 WORKDIR /app
 COPY . .
@@ -423,15 +433,18 @@ volumes:
 curl https://calendar.example.com/health
 ```
 
-**Monitor with Prometheus (example):**
-```yaml
-# prometheus.yml
-scrape_configs:
-  - job_name: 'ktcs'
-    static_configs:
-      - targets: ['calendar.example.com']
-    metrics_path: '/health'
-```
+!!! warning "No Prometheus endpoint"
+    The server does **not** expose a Prometheus metrics endpoint. `/health`
+    returns JSON (`{"status","version","pending_stamps"}`), not Prometheus
+    exposition format, so it cannot be scraped as a `metrics_path`. For now,
+    monitor with a plain uptime/JSON check against `/health`, e.g.:
+
+    ```bash
+    curl -fsS https://calendar.example.com/health | jq .status
+    ```
+
+    A Prometheus scrape target can be added once a real `/metrics` endpoint
+    exists.
 
 ## Backup and Recovery
 

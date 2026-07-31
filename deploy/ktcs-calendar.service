@@ -21,11 +21,18 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# ReadWritePaths must match the SQLite DB directory. With
+# WorkingDirectory=/opt/ktcs/calendar and DATABASE_URL=sqlite:./data/ktcs-calendar.db
+# (see .env.production.template), the DB lives in /opt/ktcs/calendar/data.
 ReadWritePaths=/opt/ktcs/calendar/data
 
 # Resource limits
 MemoryMax=512M
 CPUQuota=200%
+# The calendar holds one file descriptor per open WebSocket (/v1/stream) plus
+# RPC sockets and DB handles. The default soft limit (often 1024) is too low
+# under load; raise it for many concurrent WS connections.
+LimitNOFILE=65536
 
 # Logging (stdout/stderr go to journald)
 StandardOutput=journal

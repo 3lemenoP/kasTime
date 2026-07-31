@@ -1,4 +1,8 @@
 //! Shared test utilities and fixtures for ktcs-cli integration tests
+//!
+//! This module is compiled into each integration-test binary via `mod common;`;
+//! not every binary uses every helper, so allow unused items here.
+#![allow(dead_code)]
 
 use std::io::Write;
 use tempfile::NamedTempFile;
@@ -13,4 +17,5 @@ pub fn temp_file_with_content(content: &str) -> NamedTempFile {
 
 /// Known SHA256 hash of "test content\n"
 pub const TEST_CONTENT: &str = "test content\n";
-pub const TEST_CONTENT_HASH: &str = "a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae";
+pub const TEST_CONTENT_HASH: &str =
+    "a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae";

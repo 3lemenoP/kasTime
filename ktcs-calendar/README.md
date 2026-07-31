@@ -43,16 +43,17 @@ The server is configured via environment variables. Copy `.env.example` to `.env
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `sqlite:./data/ktcs-calendar.db?mode=rwc` | SQLite connection URL |
+| `DATABASE_URL` | `sqlite:ktcs-calendar.db?mode=rwc` | SQLite connection URL. The `?mode=rwc` is required so sqlx creates the file on a fresh install |
 
 ### Server
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BIND_ADDRESS` | `0.0.0.0:3001` | Listen address |
+| `BIND_ADDRESS` | `0.0.0.0:3001` | Listen address (the code reads `BIND_ADDRESS`, not `PORT`) |
 | `KTCS_PUBLIC_URL` | `http://{BIND_ADDRESS}` | Public URL for proof URLs |
 | `CORS_ORIGINS` | `*` | Allowed origins (comma-separated) |
-| `KTCS_ENVIRONMENT` | `development` | Environment: development, testing, production |
+| `KTCS_ENVIRONMENT` | `development` | Environment: `development`, `testing`, or `production` |
+| `TRUST_PROXY` | `false` | Trust proxy headers for the client IP. Set `true` only behind a reverse proxy you control; the client IP is then taken from `X-Real-IP` / the rightmost `X-Forwarded-For` entry |
 
 ### Kaspa Network
 
@@ -83,10 +84,15 @@ For sustainable operation, configure a RETURN wallet that receives change and au
 
 ### Rate Limiting
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RATE_LIMIT_PER_SECOND` | `100` | Requests per second per IP |
-| `RATE_LIMIT_BURST` | `200` | Burst allowance |
+The shipped production config (`.env.production.template`, mirrored by the
+`deploy/nginx/ktcs.conf` `limit_req` zone) sets **10 requests/second per IP,
+burst 50** — the effective production limit. If these are left unset the
+in-code governor default is higher, but production sets them explicitly:
+
+| Variable | Production value | Description |
+|----------|------------------|-------------|
+| `RATE_LIMIT_PER_SECOND` | `10` | Requests per second per IP |
+| `RATE_LIMIT_BURST` | `50` | Burst allowance |
 | `MAX_BODY_SIZE` | `10485760` | Max request body (10 MB) |
 
 ### Authentication
@@ -94,9 +100,14 @@ For sustainable operation, configure a RETURN wallet that receives change and au
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `API_KEY` | - | API key (min 16 characters) |
-| `REQUIRE_API_KEY` | `false` | Require API key for write ops |
+| `REQUIRE_API_KEY` | `false` | Require an API key for the write endpoint |
 
 **Note:** `REQUIRE_API_KEY=true` is enforced when `KTCS_ENVIRONMENT=production`.
+
+When enabled, the API key guards **only** the write endpoint `POST /v1/stamp`.
+The reads (`GET /v1/stamp/:id`), `POST /v1/verify`, the `GET /v1/stream`
+WebSocket, and `GET /health` are all public, so a browser frontend that never
+sends `X-API-Key` still works against a production server.
 
 ### Transaction Settings
 
@@ -104,7 +115,6 @@ For sustainable operation, configure a RETURN wallet that receives change and au
 |----------|---------|-------------|
 | `FEE_PER_GRAM` | `1` | Fee rate (sompi per gram) |
 | `CONFIRMATION_TIMEOUT_MS` | `60000` | TX confirmation timeout |
-| `KTCS_INCLUDE_MAGIC` | `true` | Include KTCS magic prefix |
 
 ### Testing
 
@@ -116,15 +126,15 @@ For sustainable operation, configure a RETURN wallet that receives change and au
 
 ## API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/stamp` | POST | Submit digest for timestamping |
-| `/v1/stamp/:id` | GET | Get stamp status and proof |
-| `/v1/verify` | POST | Verify a proof file |
-| `/v1/stream` | WS | Real-time confirmation events |
-| `/health` | GET | Health check (no auth) |
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/v1/stamp` | POST | API key (if `REQUIRE_API_KEY=true`) | Submit digest for timestamping |
+| `/v1/stamp/:id` | GET | Public | Get stamp status and proof |
+| `/v1/verify` | POST | Public | Verify a proof file |
+| `/v1/stream` | WS | Public | Real-time confirmation events |
+| `/health` | GET | Public | Health check |
 
-See [API Reference](../docs/API.md) for complete documentation.
+See [API Reference](../docs/api/reference.md) for complete documentation.
 
 ## Batch Modes
 
@@ -235,7 +245,7 @@ RUST_LOG=info,ktcs_calendar=debug ./ktcs-calendar
 
 ## Deployment
 
-See [Deployment Guide](../docs/DEPLOYMENT.md) for:
+See [Deployment Guide](../docs/deployment/production.md) for:
 
 - Systemd service configuration
 - nginx reverse proxy setup
@@ -268,7 +278,7 @@ KTCS_MOCK_MODE=true cargo run
 
 ## See Also
 
-- [API Reference](../docs/API.md)
-- [Architecture](../docs/ARCHITECTURE.md)
-- [Deployment Guide](../docs/DEPLOYMENT.md)
-- [Security Model](../docs/SECURITY.md)
+- [API Reference](../docs/api/reference.md)
+- [Architecture](../docs/concepts/architecture.md)
+- [Deployment Guide](../docs/deployment/production.md)
+- [Security Model](../docs/concepts/security.md)

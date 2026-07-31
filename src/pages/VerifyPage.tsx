@@ -3,8 +3,9 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { CheckCircle, XCircle, Loader2, FileCheck, Link2, Unlink2 } from 'lucide-react'
 import FileDropZone from '../components/ui/FileDropZone'
 import Button from '../components/ui/Button'
-import { verifyProof, parseProof, isWasmInitialized } from '../lib/wasm'
+import { verifyProof, parseProof, isWasmInitialized, initWasm } from '../lib/wasm'
 import { createKaspaClient, KASPA_PUBLIC_ENDPOINTS } from '../api/kaspa'
+import type { KaspaNetwork } from '../stores/stamp'
 import { verifyOnBlockchain, calculateSecurityMetrics, type BlockchainVerificationResult } from '../lib/blockchainVerify'
 import type { VerificationResult } from '../types/proof'
 
@@ -18,6 +19,9 @@ function VerifyPage(): JSX.Element {
   const [chainResult, setChainResult] = useState<BlockchainVerificationResult | null>(null)
   const [isVerifyingChain, setIsVerifyingChain] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The proof format carries no network field, so the user must tell us which
+  // network to check against. Defaults to mainnet; testnet proofs need this set.
+  const [network, setNetwork] = useState<KaspaNetwork>('mainnet')
 
   const handleProofDrop = async (file: File) => {
     setProofFile(file)
@@ -56,8 +60,10 @@ function VerifyPage(): JSX.Element {
     setError(null)
 
     try {
+      // Ensure WASM is initialized (await init rather than hard-failing if the
+      // background init from app startup hasn't finished yet).
       if (!isWasmInitialized()) {
-        throw new Error('WASM module not initialized')
+        await initWasm()
       }
       // Step 1: WASM cryptographic verification
       const verificationResult = verifyProof(proofBytes, originalBytes || undefined)
@@ -73,7 +79,7 @@ function VerifyPage(): JSX.Element {
         if (kaspaAtt && kaspaAtt.blockHash && kaspaAtt.txHash) {
           setIsVerifyingChain(true)
           try {
-            const kaspaClient = createKaspaClient(KASPA_PUBLIC_ENDPOINTS.mainnet[0].url)
+            const kaspaClient = createKaspaClient(KASPA_PUBLIC_ENDPOINTS[network][0].url)
             await kaspaClient.connect()
 
             const blockchainResult = await verifyOnBlockchain(
@@ -81,7 +87,8 @@ function VerifyPage(): JSX.Element {
               kaspaAtt.blockHash,
               kaspaAtt.txHash,
               verificationResult.computedCommitment,
-              kaspaAtt.daaScore
+              kaspaAtt.daaScore,
+              kaspaAtt.timestamp
             )
             setChainResult(blockchainResult)
 
@@ -380,6 +387,32 @@ function VerifyPage(): JSX.Element {
                     description="For hash verification"
                   />
                 )}
+              </div>
+
+              {/* Network Selector */}
+              <div>
+                <div className="text-label mb-3">
+                  NETWORK{' '}
+                  <span className="text-[var(--text-tertiary)] font-normal">
+                    (proofs carry no network; choose the one that was stamped)
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  {(['mainnet', 'testnet'] as const).map((net) => (
+                    <button
+                      key={net}
+                      type="button"
+                      onClick={() => setNetwork(net)}
+                      className={`flex-1 px-4 py-2.5 rounded-sm border text-sm font-medium capitalize transition-all ${
+                        network === net
+                          ? 'bg-white border-white text-black'
+                          : 'bg-transparent border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--border-strong)]'
+                      }`}
+                    >
+                      {net}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Verify Button */}

@@ -33,47 +33,52 @@ export interface BlockchainVerificationResult {
   error?: string;
 }
 
-/** KTCS commitment prefix in hex ("KTCS") */
-const KTCS_PREFIX_HEX = '4b544353';
+/**
+ * Maximum allowed difference (in milliseconds) between the attestation's
+ * timestamp and the on-chain block timestamp before verification fails.
+ */
+const TIMESTAMP_TOLERANCE_MS = 5000;
 
 /**
- * Verify a commitment exists in a transaction payload or outputs
+ * Verify that a commitment is anchored as an EXACT P2PK "burn" output.
+ *
+ * A valid KTCS burn output script is exactly:
+ *   0x20 <32-byte commitment> 0xac
+ * i.e. the push-32 opcode (0x20), the 32-byte commitment, then OP_CHECKSIG
+ * (0xac). The RPC may prepend a 2-byte (4-hex) little-endian script-version
+ * prefix, which we tolerate. A bare substring match at an arbitrary offset is
+ * NOT accepted — the commitment must occupy exactly this position, otherwise a
+ * prover could "commit" to bytes that merely happen to appear inside some
+ * unrelated output (e.g. another transaction's pubkey).
  *
  * @param expectedCommitment - The expected commitment (hex string, 32 bytes = 64 hex chars)
  * @param outputs - Transaction outputs with scriptPublicKey
- * @param payload - Optional transaction payload (hex string)
- * @returns true if commitment is found
+ * @returns true if an output is an exact commitment burn script
  */
 function verifyCommitmentInTransaction(
   expectedCommitment: string,
-  outputs: Array<{ scriptPublicKey: string }>,
-  payload?: string
+  outputs: Array<{ scriptPublicKey: string }>
 ): boolean {
   // Normalize commitment (remove 0x prefix if present)
   const commitment = expectedCommitment.toLowerCase().replace(/^0x/, '');
 
-  // Check payload first (if present)
-  if (payload) {
-    const payloadLower = payload.toLowerCase();
-    // Check for KTCS-prefixed commitment
-    if (payloadLower.includes(KTCS_PREFIX_HEX + commitment)) {
-      return true;
-    }
-    // Check for bare commitment
-    if (payloadLower.includes(commitment)) {
-      return true;
-    }
+  // The commitment must be exactly 32 bytes to form a valid burn script.
+  if (!/^[0-9a-f]{64}$/.test(commitment)) {
+    return false;
   }
 
-  // Check each output's script
+  // Exact P2PK burn script: 0x20 || <commitment> || 0xac
+  const burnScript = `20${commitment}ac`;
+
   for (const output of outputs) {
-    const script = output.scriptPublicKey.toLowerCase();
-    // Check for KTCS-prefixed commitment
-    if (script.includes(KTCS_PREFIX_HEX + commitment)) {
+    const script = output.scriptPublicKey.toLowerCase().replace(/^0x/, '');
+
+    // Accept with no version prefix ...
+    if (script === burnScript) {
       return true;
     }
-    // Check for bare commitment in script
-    if (script.includes(commitment)) {
+    // ... or with exactly a 2-byte (4-hex) script-version prefix.
+    if (script.length === burnScript.length + 4 && script.slice(4) === burnScript) {
       return true;
     }
   }
@@ -89,6 +94,7 @@ function verifyCommitmentInTransaction(
  * @param txHash - Transaction hash from the attestation (hex string)
  * @param expectedCommitment - The commitment computed from proof operations (hex string)
  * @param expectedDaaScore - Optional DAA score from attestation for validation
+ * @param expectedTimestamp - Optional timestamp (Unix ms) from attestation for validation
  * @returns BlockchainVerificationResult
  */
 export async function verifyOnBlockchain(
@@ -96,7 +102,8 @@ export async function verifyOnBlockchain(
   blockHash: string,
   txHash: string,
   expectedCommitment: string,
-  expectedDaaScore?: number
+  expectedDaaScore?: number,
+  expectedTimestamp?: number
 ): Promise<BlockchainVerificationResult> {
   const result: BlockchainVerificationResult = {
     blockExists: false,
@@ -117,11 +124,24 @@ export async function verifyOnBlockchain(
         timestamp: blockInfo.timestamp,
       };
 
-      // Validate DAA score matches if provided
+      // Validate DAA score matches if provided — a mismatch is a HARD failure,
+      // not a warning: the attested DAA score must equal the on-chain block's.
       if (expectedDaaScore !== undefined && BigInt(expectedDaaScore) !== blockInfo.daaScore) {
-        console.warn(
-          `DAA score mismatch: attestation has ${expectedDaaScore}, block has ${blockInfo.daaScore}`
-        );
+        result.error = `DAA score mismatch: attestation claims ${expectedDaaScore}, block has ${blockInfo.daaScore}`;
+        return result;
+      }
+
+      // Validate the attested timestamp against the on-chain block timestamp.
+      // Both are Unix milliseconds; they should be identical, so anything beyond
+      // a few seconds of drift means the proof carries a forged time — FAIL.
+      if (expectedTimestamp !== undefined) {
+        const drift = Math.abs(expectedTimestamp - Number(blockInfo.timestamp));
+        if (drift > TIMESTAMP_TOLERANCE_MS) {
+          result.error =
+            `Timestamp mismatch: attestation claims ${expectedTimestamp}, ` +
+            `block timestamp is ${blockInfo.timestamp} (drift ${drift}ms)`;
+          return result;
+        }
       }
     } catch (e) {
       result.error = `Block not found: ${blockHash}`;
@@ -152,8 +172,7 @@ export async function verifyOnBlockchain(
         // Verify commitment is in the transaction outputs
         result.commitmentVerified = verifyCommitmentInTransaction(
           expectedCommitment,
-          tx.outputs.map(o => ({ scriptPublicKey: o.scriptPublicKey })),
-          undefined // payload not available from block data
+          tx.outputs.map(o => ({ scriptPublicKey: o.scriptPublicKey }))
         );
 
         if (!result.commitmentVerified) {
@@ -199,8 +218,8 @@ export function calculateSecurityMetrics(blocksSince: bigint): {
   btcEquivalentConfirmations: number;
   securityLevel: 'low' | 'medium' | 'high' | 'very-high';
 } {
-  // At ~10 BPS, 60000 blocks = ~100 minutes = ~1 BTC confirmation
-  const btcEquiv = Number(blocksSince) / 60000;
+  // At ~10 BPS, ~6000 blocks = ~600 seconds = ~10 minutes = ~1 BTC confirmation
+  const btcEquiv = Number(blocksSince) / 6000;
 
   let securityLevel: 'low' | 'medium' | 'high' | 'very-high';
   if (btcEquiv < 0.5) {

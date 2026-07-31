@@ -14,6 +14,18 @@ KTCS proofs can be verified by anyone with access to a Kaspa node. No trust in c
 3. The Kaspa blockchain is publicly verifiable
 4. Blue work calculations are deterministic from chain data
 
+!!! note "Offline vs. on-chain verification"
+    Offline verification (`verify_proof`, and `ktcs verify` without `--chain`)
+    proves only that the proof is **cryptographically and structurally
+    consistent** and carries a complete Kaspa attestation. It does **not** prove
+    the attestation is anchored on-chain — a fabricated but well-formed
+    attestation passes the offline check. To prove chain inclusion you must run
+    the on-chain path (`verify_attestation_on_chain` / `ktcs verify --chain`),
+    which queries a Kaspa node and checks the block, transaction, exact
+    commitment burn-script, and timestamp. On-chain verification is only as
+    trustworthy as the node you query. Results expose `structurally_valid` and
+    `chain_verified` flags so consumers can tell the two apart.
+
 ### What Calendars Can and Cannot Do
 
 **Calendars CAN:**
@@ -114,11 +126,16 @@ Kaspa's GHOSTDAG consensus provides fast finality:
 
 ### Private Key Handling
 
-**In ktcs-core:**
-- Private keys use `secrecy::Secret<T>` wrapper
-- Keys are zeroized on drop (memory cleared)
-- No serialization of private keys in normal operations
-- Constant-time signature operations
+**Key zeroization differs by crate:**
+- **ktcs-core** and **ktcs-cli** hold the raw secret key in a `Zeroizing`
+  buffer, so it is wiped on drop.
+- **ktcs-calendar** wraps wallet keys in `secrecy::Secret<String>` and removes
+  the source env var after reading.
+- **ktcs-wasm / browser**: the Rust side zeroizes its own copies, but a raw key
+  typed into the web app exists as a JavaScript string on the JS heap that Rust
+  cannot scrub — see [Browser key handling](#browser-key-handling) below.
+- No serialization of private keys in normal operations.
+- Constant-time signature operations.
 
 **Best practices:**
 - Never pass private keys as command-line arguments
@@ -134,7 +151,8 @@ Kaspa's GHOSTDAG consensus provides fast finality:
 
 **Rate limiting:**
 - Per-IP rate limiting via tower-governor
-- Default: 100 requests/second, burst 200
+- Effective production limit: 10 requests/second, burst 50 (set by
+  `.env.production.template` and mirrored in nginx)
 - Prevents abuse and DoS
 
 **Request validation:**
@@ -176,6 +194,20 @@ Kaspa's GHOSTDAG consensus provides fast finality:
 - Store wallet keys encrypted at rest
 - Use hardware security modules (HSM) for high-value deployments
 - Implement key rotation procedures
+
+### Browser Key Handling
+
+Direct stamping in the web app requires pasting a raw private key. That key
+lives as an ordinary JavaScript string on the JS heap (in React/zustand state)
+before and after it is handed to WASM. The Rust/WASM code zeroizes its own
+copies, but it cannot scrub the JavaScript-held copies, and any script running
+in the page (e.g. an XSS payload) could read them.
+
+- It is never persisted to storage and is excluded from any state that is.
+- Still, treat raw-key direct stamping in the browser as **at your own risk**.
+- Prefer calendar mode, or use a low-value throwaway wallet for browser direct
+  stamping. The CLI (`--wallet-file` / `--wallet-stdin`) is a safer path for
+  funded wallets.
 
 ## Privacy Considerations
 

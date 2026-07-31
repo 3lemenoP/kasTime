@@ -28,7 +28,11 @@ fn test_config_path_contains_ktcs_dir() {
         .unwrap();
 
     let path = String::from_utf8_lossy(&output.stdout);
-    assert!(path.contains("ktcs"), "Path should contain 'ktcs': {}", path);
+    assert!(
+        path.contains("ktcs"),
+        "Path should contain 'ktcs': {}",
+        path
+    );
 }
 
 // ==================== Config Init ====================
@@ -98,7 +102,10 @@ fn test_config_init_force_overwrites() {
 
     let content = fs::read_to_string(config_dir.join("config.toml")).unwrap();
     assert!(content.contains("network"), "Should have replaced content");
-    assert!(!content.contains("old content"), "Should not have old content");
+    assert!(
+        !content.contains("old content"),
+        "Should not have old content"
+    );
 }
 
 #[test]
@@ -219,8 +226,11 @@ fn test_config_set_lists_valid_keys_on_error() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     // The error message should contain valid keys list
-    assert!(stderr.contains("Unknown config key") || stderr.contains("network"),
-            "Expected error message about unknown key, got: {}", stderr);
+    assert!(
+        stderr.contains("Unknown config key") || stderr.contains("network"),
+        "Expected error message about unknown key, got: {}",
+        stderr
+    );
 }
 
 // ==================== Config Set Success Cases ====================

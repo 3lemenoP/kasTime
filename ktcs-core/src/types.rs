@@ -148,7 +148,8 @@ pub struct KaspaAttestation {
     pub timestamp: u64,
     /// Transaction hash containing the commitment (32 bytes)
     pub tx_hash: [u8; 32],
-    /// Transaction index within the block
+    /// OUTPUT index of the commitment within the transaction (the P2PK burn
+    /// output; the code sets this to the commitment's output index, typically 0).
     pub tx_index: u32,
     /// Cumulative blue work at this block (32 bytes, big-endian)
     pub blue_work: [u8; 32],
@@ -312,7 +313,10 @@ mod tests {
 
     #[test]
     fn test_hash_algorithm_conversion() {
-        assert_eq!(HashAlgorithm::try_from(0x08).unwrap(), HashAlgorithm::Sha256);
+        assert_eq!(
+            HashAlgorithm::try_from(0x08).unwrap(),
+            HashAlgorithm::Sha256
+        );
         assert_eq!(
             HashAlgorithm::try_from(0x14).unwrap(),
             HashAlgorithm::Ripemd160

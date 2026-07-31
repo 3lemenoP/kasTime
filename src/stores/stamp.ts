@@ -136,7 +136,6 @@ export interface StampState {
     transactionId?: string;
     blockInfo?: KaspaBlockInfo;
   }) => void;
-  clearWallet: () => void;
 }
 
 /** Default RPC endpoint */
@@ -193,6 +192,16 @@ export const useStampStore = create<StampState>()(
       step: 'idle',
       directStep: 'idle',
       error: null,
+      // Clear the private key (and its derived data) whenever the user leaves
+      // the direct-stamp flow — the key must not linger in the store.
+      ...(mode !== 'direct'
+        ? {
+            walletKey: null,
+            walletAddress: null,
+            utxos: null,
+            walletBalance: null,
+          }
+        : {}),
     }),
 
   setFile: (file: File | null) => {
@@ -218,7 +227,21 @@ export const useStampStore = create<StampState>()(
         error: null,
       });
     } else {
-      set({ file: null });
+      // Reset ALL file-derived fields together so a stale fileName/hash can't
+      // leak into (and mislabel) the next proof.
+      set({
+        file: null,
+        fileName: null,
+        hash: null,
+        stampId: null,
+        stampResponse: null,
+        confirmedProof: null,
+        nonce: null,
+        commitment: null,
+        transactionId: null,
+        blockInfo: null,
+        error: null,
+      });
     }
   },
 
@@ -234,18 +257,20 @@ export const useStampStore = create<StampState>()(
     }),
 
   setConfirmedProof: (proof: string) =>
-    set({
-      confirmedProof: proof,
-      step: 'confirmed',
-      directStep: 'complete',
-    }),
+    // Only advance the state machine that is actually in use, so a calendar
+    // confirmation can't move the direct machine (and vice versa).
+    set(
+      get().mode === 'direct'
+        ? { confirmedProof: proof, directStep: 'complete' }
+        : { confirmedProof: proof, step: 'confirmed' }
+    ),
 
   setError: (error: string) =>
-    set({
-      error,
-      step: 'error',
-      directStep: 'error',
-    }),
+    set(
+      get().mode === 'direct'
+        ? { error, directStep: 'error' }
+        : { error, step: 'error' }
+    ),
 
   reset: () =>
     set({
@@ -254,9 +279,8 @@ export const useStampStore = create<StampState>()(
       mode: get().mode,
       network: get().network,
       rpcUrl: get().rpcUrl,
-      // Preserve wallet if set (user might want to stamp another file)
-      walletKey: get().walletKey,
-      walletAddress: get().walletAddress,
+      // Do NOT preserve the wallet key — clearing state must also clear the
+      // private key from memory (initialState leaves it null).
     }),
 
   // ==========================================================================
@@ -354,21 +378,16 @@ export const useStampStore = create<StampState>()(
       set(updates);
     }
   },
-
-  clearWallet: () =>
-    set({
-      walletKey: null,
-      walletAddress: null,
-      utxos: null,
-      walletBalance: null,
-    }),
     }),
     {
-      name: 'ktcs-direct-proof',
+      name: 'ktcs-direct-proof-v2',
       storage: createJSONStorage(() => localStorage, {
         reviver: (_key, value) => {
-          // Restore bigint from string representation
-          if (typeof value === 'string' && value.endsWith('n')) {
+          // Restore bigint from its "<digits>n" serialization. Match ONLY a
+          // sign + digits + trailing 'n' — a naive endsWith('n') would try to
+          // BigInt() ordinary strings that happen to end in 'n' (e.g. a base64
+          // proof or a filename like "main"), throwing and breaking rehydration.
+          if (typeof value === 'string' && /^-?\d+n$/.test(value)) {
             return BigInt(value.slice(0, -1));
           }
           return value;
@@ -382,80 +401,20 @@ export const useStampStore = create<StampState>()(
         },
       }),
       partialize: (state) => ({
-        // Only persist the proof itself for later download
-        // All other data is transient and regenerated on each session
+        // Persist everything needed to re-render a COMPLETED direct proof after
+        // a reload. Without blockInfo the direct branch of ProofPage renders
+        // "PROOF NOT FOUND" even though the proof itself is in localStorage.
         confirmedProof: state.confirmedProof,
+        blockInfo: state.blockInfo,
+        transactionId: state.transactionId,
+        hash: state.hash,
+        fileName: state.fileName,
         // NEVER persist:
         // - walletKey (security - critical)
         // - walletAddress (can be re-derived)
         // - utxos, walletBalance (stale data)
-        // - blockInfo, transactionId, hash, fileName (metadata exposure)
+        // - nonce, commitment (transient tx-build state)
       }),
     }
   )
 );
-
-/**
- * Helper hook to get step display info (calendar mode)
- */
-export function getStepInfo(step: StampStep): { label: string; description: string; progress: number } {
-  switch (step) {
-    case 'idle':
-      return { label: 'Ready', description: 'Select a file to timestamp', progress: 0 };
-    case 'hashing':
-      return { label: 'Hashing', description: 'Computing SHA256 hash...', progress: 25 };
-    case 'submitting':
-      return { label: 'Submitting', description: 'Sending to calendar server...', progress: 50 };
-    case 'pending':
-      return { label: 'Pending', description: 'Waiting for block confirmation...', progress: 75 };
-    case 'confirmed':
-      return { label: 'Confirmed', description: 'Timestamp confirmed on Kaspa!', progress: 100 };
-    case 'error':
-      return { label: 'Error', description: 'Something went wrong', progress: 0 };
-    default:
-      return { label: 'Unknown', description: '', progress: 0 };
-  }
-}
-
-/**
- * Helper hook to get direct stamping step display info
- */
-export function getDirectStepInfo(step: DirectStampStep): {
-  label: string;
-  description: string;
-  progress: number;
-} {
-  switch (step) {
-    case 'idle':
-      return { label: 'Ready', description: 'Ready to stamp directly', progress: 0 };
-    case 'connecting':
-      return { label: 'Connecting', description: 'Connecting to Kaspa node...', progress: 10 };
-    case 'fetching-utxos':
-      return { label: 'Fetching UTXOs', description: 'Getting wallet balance...', progress: 20 };
-    case 'building-tx':
-      return { label: 'Building', description: 'Building commitment transaction...', progress: 40 };
-    case 'signing':
-      return { label: 'Signing', description: 'Signing transaction...', progress: 50 };
-    case 'submitting':
-      return { label: 'Submitting', description: 'Submitting to Kaspa network...', progress: 60 };
-    case 'confirming':
-      return { label: 'Confirming', description: 'Waiting for block confirmation...', progress: 80 };
-    case 'complete':
-      return { label: 'Complete', description: 'Timestamp confirmed on Kaspa!', progress: 100 };
-    case 'error':
-      return { label: 'Error', description: 'Something went wrong', progress: 0 };
-    default:
-      return { label: 'Unknown', description: '', progress: 0 };
-  }
-}
-
-/**
- * Format sompi to KAS with 2 decimal places
- */
-export function formatKas(sompi: bigint): string {
-  const kas = Number(sompi) / 100_000_000;
-  return kas.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}

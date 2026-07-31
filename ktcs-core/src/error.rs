@@ -70,7 +70,6 @@ pub enum KtcsError {
     ConnectionError(String),
 
     // Wallet and transaction errors
-
     /// Invalid input data (e.g., malformed keys, invalid hex encoding)
     #[error("Invalid data: {0}")]
     InvalidData(String),

@@ -11,13 +11,14 @@ use std::time::Duration;
 
 #[cfg(feature = "kaspa-client")]
 use ktcs_core::{
-    kaspa::{KaspaClient, KaspaClientConfig, ConnectionState},
-    resolver::{Resolver, resolve_url},
+    kaspa::{ConnectionState, KaspaClient, KaspaClientConfig},
+    resolver::{resolve_url, Resolver},
 };
 
 /// Test that the resolver can find testnet-10 endpoints
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_resolver_testnet10_url() {
     println!("\n=== Test: Resolver testnet-10 URL ===\n");
 
@@ -26,8 +27,10 @@ async fn test_resolver_testnet10_url() {
     match resolver.get_node_url("testnet-10").await {
         Ok(url) => {
             println!("✓ Resolved testnet-10 URL: {}", url);
-            assert!(url.starts_with("wss://") || url.starts_with("ws://"),
-                "URL should be a WebSocket URL");
+            assert!(
+                url.starts_with("wss://") || url.starts_with("ws://"),
+                "URL should be a WebSocket URL"
+            );
         }
         Err(e) => {
             println!("✗ Failed to resolve testnet-10: {}", e);
@@ -40,6 +43,7 @@ async fn test_resolver_testnet10_url() {
 /// Test that the resolver can find testnet-11 endpoints
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_resolver_testnet11_url() {
     println!("\n=== Test: Resolver testnet-11 URL ===\n");
 
@@ -48,8 +52,10 @@ async fn test_resolver_testnet11_url() {
     match resolver.get_node_url("testnet-11").await {
         Ok(url) => {
             println!("✓ Resolved testnet-11 URL: {}", url);
-            assert!(url.starts_with("wss://") || url.starts_with("ws://"),
-                "URL should be a WebSocket URL");
+            assert!(
+                url.starts_with("wss://") || url.starts_with("ws://"),
+                "URL should be a WebSocket URL"
+            );
         }
         Err(e) => {
             println!("✗ Failed to resolve testnet-11: {}", e);
@@ -61,6 +67,7 @@ async fn test_resolver_testnet11_url() {
 /// Test the convenience function resolve_url
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_resolve_url_function() {
     println!("\n=== Test: resolve_url convenience function ===\n");
 
@@ -80,6 +87,7 @@ async fn test_resolve_url_function() {
 /// Test client creation with testnet10 public config
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_client_config_testnet10() {
     println!("\n=== Test: Client config for testnet-10 ===\n");
 
@@ -87,7 +95,10 @@ async fn test_client_config_testnet10() {
 
     assert!(config.use_resolver, "Config should use resolver");
     assert_eq!(config.network, Some("testnet-10".to_string()));
-    assert!(config.rpc_url.is_empty(), "RPC URL should be empty (resolved)");
+    assert!(
+        config.rpc_url.is_empty(),
+        "RPC URL should be empty (resolved)"
+    );
 
     println!("✓ Config created:");
     println!("  Network: {:?}", config.network);
@@ -99,6 +110,7 @@ async fn test_client_config_testnet10() {
 /// Test connecting to testnet-10 via resolver
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_connect_testnet10_via_resolver() {
     println!("\n=== Test: Connect to testnet-10 via resolver ===\n");
 
@@ -106,7 +118,10 @@ async fn test_connect_testnet10_via_resolver() {
     let client = KaspaClient::new(config);
 
     // Initial state should be disconnected
-    assert_eq!(client.connection_state().await, ConnectionState::Disconnected);
+    assert_eq!(
+        client.connection_state().await,
+        ConnectionState::Disconnected
+    );
     println!("✓ Initial state: Disconnected");
 
     // Try to connect
@@ -130,7 +145,8 @@ async fn test_connect_testnet10_via_resolver() {
                     // Verify it's actually testnet
                     assert!(
                         dag_info.network.contains("testnet") || dag_info.network.contains("tn"),
-                        "Should be connected to a testnet, got: {}", dag_info.network
+                        "Should be connected to a testnet, got: {}",
+                        dag_info.network
                     );
                 }
                 Err(e) => {
@@ -156,6 +172,7 @@ async fn test_connect_testnet10_via_resolver() {
 /// Test connecting to testnet-11 via resolver
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_connect_testnet11_via_resolver() {
     println!("\n=== Test: Connect to testnet-11 via resolver ===\n");
 
@@ -166,6 +183,7 @@ async fn test_connect_testnet11_via_resolver() {
         request_timeout_ms: 30000,
         auto_reconnect: false,
         use_resolver: true,
+        tls_verify: true,
     };
     let client = KaspaClient::new(config);
 
@@ -201,6 +219,7 @@ async fn test_connect_testnet11_via_resolver() {
 /// Test DAA score retrieval
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_get_daa_score() {
     println!("\n=== Test: Get DAA score ===\n");
 
@@ -229,6 +248,7 @@ async fn test_get_daa_score() {
 /// Test blue score retrieval
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_get_blue_score() {
     println!("\n=== Test: Get blue score ===\n");
 
@@ -257,6 +277,7 @@ async fn test_get_blue_score() {
 /// Test fetching UTXOs for a test address
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_get_utxos() {
     println!("\n=== Test: Get UTXOs for address ===\n");
 
@@ -276,7 +297,12 @@ async fn test_get_utxos() {
         Ok(utxos) => {
             println!("✓ UTXOs retrieved: {} entries", utxos.len());
             for (i, utxo) in utxos.iter().take(5).enumerate() {
-                println!("  {}. {} sompi (DAA: {})", i + 1, utxo.amount, utxo.block_daa_score);
+                println!(
+                    "  {}. {} sompi (DAA: {})",
+                    i + 1,
+                    utxo.amount,
+                    utxo.block_daa_score
+                );
             }
         }
         Err(e) => {
@@ -291,6 +317,7 @@ async fn test_get_utxos() {
 /// Test multiple concurrent connections
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_concurrent_connections() {
     println!("\n=== Test: Concurrent connections ===\n");
 
@@ -302,20 +329,15 @@ async fn test_concurrent_connections() {
 
     println!("→ Connecting two clients concurrently...");
 
-    let (result1, result2) = tokio::join!(
-        client1.connect(),
-        client2.connect()
-    );
+    let (result1, result2) = tokio::join!(client1.connect(), client2.connect());
 
     match (result1, result2) {
         (Ok(()), Ok(())) => {
             println!("✓ Both clients connected");
 
             // Fetch DAG info from both
-            let (dag1, dag2) = tokio::join!(
-                client1.get_block_dag_info(),
-                client2.get_block_dag_info()
-            );
+            let (dag1, dag2) =
+                tokio::join!(client1.get_block_dag_info(), client2.get_block_dag_info());
 
             if let (Ok(d1), Ok(d2)) = (dag1, dag2) {
                 println!("✓ Client 1 DAA: {}", d1.current_daa_score);
@@ -338,6 +360,7 @@ async fn test_concurrent_connections() {
 /// Test connection state transitions
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_connection_states() {
     println!("\n=== Test: Connection state transitions ===\n");
 
@@ -369,21 +392,31 @@ async fn test_connection_states() {
 /// Test is_connected helper
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_is_connected() {
     println!("\n=== Test: is_connected helper ===\n");
 
     let config = KaspaClientConfig::testnet10_public();
     let client = KaspaClient::new(config);
 
-    assert!(!client.is_connected().await, "Should not be connected initially");
+    assert!(
+        !client.is_connected().await,
+        "Should not be connected initially"
+    );
     println!("✓ Not connected initially");
 
     if client.connect().await.is_ok() {
-        assert!(client.is_connected().await, "Should be connected after connect()");
+        assert!(
+            client.is_connected().await,
+            "Should be connected after connect()"
+        );
         println!("✓ Connected after connect()");
 
         client.disconnect().await.ok();
-        assert!(!client.is_connected().await, "Should not be connected after disconnect()");
+        assert!(
+            !client.is_connected().await,
+            "Should not be connected after disconnect()"
+        );
         println!("✓ Not connected after disconnect()");
     }
 }
@@ -391,6 +424,7 @@ async fn test_is_connected() {
 /// Comprehensive test that exercises the full connection flow
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_full_testnet_flow() {
     println!("\n");
     println!("╔═══════════════════════════════════════════════════════════╗");
@@ -438,6 +472,7 @@ async fn test_full_testnet_flow() {
         request_timeout_ms: 30000,
         auto_reconnect: false,
         use_resolver: false, // Already resolved
+        tls_verify: true,
     };
     let client = KaspaClient::new(config);
 
@@ -457,13 +492,17 @@ async fn test_full_testnet_flow() {
                         request_timeout_ms: 30000,
                         auto_reconnect: false,
                         use_resolver: false,
+                        tls_verify: true,
                     };
                     let client = KaspaClient::new(config);
                     if client.connect().await.is_ok() {
                         println!("  ✓ Connected to mainnet instead");
                         // Just verify connection works
                         if let Ok(dag) = client.get_block_dag_info().await {
-                            println!("  ✓ Got DAG info: network={}, DAA={}", dag.network, dag.current_daa_score);
+                            println!(
+                                "  ✓ Got DAG info: network={}, DAA={}",
+                                dag.network, dag.current_daa_score
+                            );
                         }
                         client.disconnect().await.ok();
                         return;
@@ -488,7 +527,10 @@ async fn test_full_testnet_flow() {
             println!("  ✓ Difficulty:   {:.6}", dag_info.difficulty);
             println!("  ✓ Median Time:  {}", dag_info.past_median_time);
             println!("  ✓ Tip Count:    {} blocks", dag_info.tip_hashes.len());
-            println!("  ✓ Pruning Hash: {}...", hex::encode(&dag_info.pruning_point_hash[..8]));
+            println!(
+                "  ✓ Pruning Hash: {}...",
+                hex::encode(&dag_info.pruning_point_hash[..8])
+            );
         }
         Err(e) => {
             println!("  ✗ Failed: {}", e);
@@ -512,7 +554,10 @@ async fn test_full_testnet_flow() {
     if let Ok(work) = client.get_current_blue_work().await {
         // Format blue work (find first non-zero byte)
         let non_zero_start = work.iter().position(|&b| b != 0).unwrap_or(31);
-        println!("  ✓ Blue Work:  0x{}...", hex::encode(&work[non_zero_start..non_zero_start.min(31)+4]));
+        println!(
+            "  ✓ Blue Work:  0x{}...",
+            hex::encode(&work[non_zero_start..non_zero_start.min(31) + 4])
+        );
     }
 
     println!();
@@ -528,7 +573,11 @@ async fn test_full_testnet_flow() {
             println!("  ✓ UTXOs:   {} entries", utxos.len());
             if !utxos.is_empty() {
                 let total: u64 = utxos.iter().map(|u| u.amount).sum();
-                println!("  ✓ Balance: {} sompi ({:.8} KAS)", total, total as f64 / 100_000_000.0);
+                println!(
+                    "  ✓ Balance: {} sompi ({:.8} KAS)",
+                    total,
+                    total as f64 / 100_000_000.0
+                );
             }
         }
         Err(e) => {

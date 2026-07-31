@@ -183,7 +183,7 @@ const utxos = [
   {
     transaction_id: 'abc123...', // 32 bytes hex
     index: 0,
-    amount: 100000000,           // sompi
+    amount: '100000000',         // sompi, as a STRING (preserves u64 precision)
     script_public_key_hex: '...',
     block_daa_score: 42000000,
     is_coinbase: false,
@@ -234,19 +234,26 @@ ws.send(JSON.stringify(rpcRequest));
 
 ### Build Pending Proof
 
+`build_pending_proof(digestHex, nonceHex)` takes **two** arguments and returns
+an object (not raw bytes). The serialized proof is in `result.proof_bytes`.
+
 ```javascript
 const digestHex = compute_sha256_hex(documentBytes);
 const nonceHex = generate_nonce();
 
-const pendingProofBytes = build_pending_proof(
-  digestHex,
-  nonceHex,
-  'https://calendar.example.com/v1/stamp/ktcs_abc123'
-);
+const result = build_pending_proof(digestHex, nonceHex);
+
+console.log(result.digest);       // original digest hex
+console.log(result.nonce);        // nonce hex
+console.log(result.commitment);   // computed commitment hex
+console.log(result.proof_bytes);  // Uint8Array of the pending proof
 
 // Save pending proof
-downloadFile(pendingProofBytes, 'document.kts');
+downloadFile(result.proof_bytes, 'document.kts');
 ```
+
+The `proof_bytes` value is what you later pass to `complete_proof(...)` as the
+`pendingProofBytes` argument.
 
 ### Complete Proof with Attestation
 
@@ -326,8 +333,8 @@ console.log(version); // "0.1.0"
 
 | Function | Description |
 |----------|-------------|
-| `build_pending_proof(...)` | Create pending proof |
-| `complete_proof(...)` | Add attestation to proof |
+| `build_pending_proof(digestHex, nonceHex)` | Create pending proof; returns `{ digest, nonce, commitment, proof_bytes }` |
+| `complete_proof(pendingProofBytes, attestationJson)` | Add attestation to proof; returns `Uint8Array` |
 | `serialize_proof_to_bytes(proofJson)` | Serialize proof object |
 
 ## Browser Compatibility
@@ -378,12 +385,17 @@ export async function verifyProof(proofBytes: Uint8Array) {
 
 ## Security Notes
 
-- Private keys are handled in WASM memory (not exposed to JS heap)
-- Use `crypto.getRandomValues` for all randomness
-- Never log or store private keys in browser storage
+- **Raw private keys entered in the browser DO live on the JS heap.** A key
+  passed to these functions exists as a JavaScript string before it reaches
+  WASM, and any value returned or held by the app is on the JS heap too. The
+  Rust side zeroizes its own copies after use, but it cannot scrub the
+  JavaScript-held copies. Treat raw-key direct stamping as at-your-own-risk;
+  prefer calendar mode, or use a low-value throwaway wallet for direct mode.
+- Use `crypto.getRandomValues` for all randomness (used internally for nonces).
+- Never log or persist private keys in browser storage.
 
 ## See Also
 
-- [Proof Format](../docs/PROOF-FORMAT.md)
-- [Architecture](../docs/ARCHITECTURE.md)
-- [Security](../docs/SECURITY.md)
+- [Proof Format](../docs/concepts/proof-format.md)
+- [Architecture](../docs/concepts/architecture.md)
+- [Security](../docs/concepts/security.md)

@@ -8,8 +8,6 @@
 import type {
   StampRequest,
   StampResponse,
-  VerifyResponse,
-  HealthResponse,
   WsServerMessage,
   WsConfirmedMessage,
 } from '../types';
@@ -128,42 +126,6 @@ export class CalendarClient {
       }
       const error = await response.text();
       throw new Error(`Get stamp failed: ${error}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Verify a proof
-   * @param proofData - Binary .kts proof data
-   * @returns Verification result
-   */
-  async verify(proofData: Uint8Array): Promise<VerifyResponse> {
-    const response = await this.fetchWithTimeout(`${this.baseUrl}/v1/verify`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-      },
-      body: proofData as unknown as BodyInit,
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Verify failed: ${error}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Check server health
-   * @returns Health status
-   */
-  async health(): Promise<HealthResponse> {
-    const response = await this.fetchWithTimeout(`${this.baseUrl}/health`);
-
-    if (!response.ok) {
-      throw new Error('Health check failed');
     }
 
     return response.json();

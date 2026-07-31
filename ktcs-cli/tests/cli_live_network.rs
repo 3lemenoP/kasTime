@@ -76,7 +76,7 @@ fn test_wallet_balance_with_funded_address() {
             "balance",
             "--address",
             &address,
-            "--rpc-url",
+            "--rpc",
             &rpc_url,
         ])
         .output()
@@ -129,7 +129,7 @@ fn test_wallet_balance_with_wallet_file() {
             "balance",
             "--wallet-file",
             wallet_file.path().to_str().unwrap(),
-            "--rpc-url",
+            "--rpc",
             &rpc_url,
         ])
         .output()
@@ -151,7 +151,9 @@ fn test_wallet_balance_with_wallet_file() {
 
 #[test]
 #[ignore = "Requires network - run with --ignored"]
-fn test_wallet_balance_json_output() {
+fn test_wallet_balance_with_explicit_rpc() {
+    // `wallet balance` has no `--format json` flag; this exercises the real
+    // `--rpc` flag and asserts human-readable balance output.
     let address = get_wallet_address();
     let rpc_url = get_rpc_url();
 
@@ -162,19 +164,19 @@ fn test_wallet_balance_json_output() {
             "balance",
             "--address",
             &address,
-            "--rpc-url",
+            "--rpc",
             &rpc_url,
-            "--format",
-            "json",
         ])
         .output()
         .unwrap();
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // Should be valid JSON
-        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
-        assert!(parsed.is_ok(), "Expected valid JSON, got: {}", stdout);
+        assert!(
+            stdout.contains("KAS") || stdout.chars().any(|c| c.is_numeric()),
+            "Expected balance output, got: {}",
+            stdout
+        );
     }
 }
 
@@ -231,7 +233,15 @@ fn test_stamp_direct_creates_complete_proof() {
 
     // Create a temp file to stamp
     let mut file = NamedTempFile::new().unwrap();
-    writeln!(file, "test content for direct stamping {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()).unwrap();
+    writeln!(
+        file,
+        "test content for direct stamping {}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    )
+    .unwrap();
     file.flush().unwrap();
 
     let output_file = NamedTempFile::new().unwrap();
@@ -338,7 +348,9 @@ fn test_full_direct_stamp_and_verify_workflow() {
         .unwrap();
 
     assert!(hash_output.status.success());
-    let file_hash = String::from_utf8_lossy(&hash_output.stdout).trim().to_string();
+    let file_hash = String::from_utf8_lossy(&hash_output.stdout)
+        .trim()
+        .to_string();
     println!("File hash: {}", file_hash);
 
     // Step 3: Direct stamp
@@ -390,7 +402,7 @@ fn test_full_direct_stamp_and_verify_workflow() {
         .unwrap()
         .args([
             "verify",
-            "--file",
+            "--data",
             file.path().to_str().unwrap(),
             proof_file.path().to_str().unwrap(),
         ])
@@ -405,7 +417,7 @@ fn test_full_direct_stamp_and_verify_workflow() {
             "--chain",
             "--rpc-url",
             &rpc_url,
-            "--file",
+            "--data",
             file.path().to_str().unwrap(),
             proof_file.path().to_str().unwrap(),
         ])
@@ -442,7 +454,7 @@ fn test_rpc_connection_works() {
             "balance",
             "--address",
             &address,
-            "--rpc-url",
+            "--rpc",
             &rpc_url,
         ])
         .timeout(std::time::Duration::from_secs(30))

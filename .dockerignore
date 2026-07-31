@@ -24,8 +24,12 @@ ktcs-calendar/.env
 # Docs & misc
 mkdocs.yml
 # Exclude root-level markdown but keep docs/ for frontend DocsPage
+# (src/pages/DocsPage.tsx imports docs/**/*.md?raw at build time).
 README.md
 CONTRIBUTING.md
 CHANGELOG.md
 LICENSE.md
-nul
+CODEBASE_ANALYSIS.md
+
+# IMPORTANT: do NOT add Cargo.lock here. It must reach the calendar Docker build
+# context so `cargo build --locked` (see Dockerfile) produces reproducible builds.

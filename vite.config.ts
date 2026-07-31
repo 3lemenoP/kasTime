@@ -10,19 +10,15 @@ export default defineConfig({
       '@': '/src',
     },
   },
-  // WASM support configuration
-  optimizeDeps: {
-    // Don't pre-bundle the WASM module - it needs to be loaded at runtime
-    exclude: ['ktcs_wasm'],
-  },
   build: {
     target: 'esnext', // Required for top-level await in WASM
   },
-  // Enable WebAssembly support
   server: {
     fs: {
-      // Allow serving files from the src/wasm directory
-      allow: ['..'],
+      // Restrict the dev server to the project root. Do NOT use '..' — that
+      // would expose the entire parent repository (Rust crates, docs, etc.)
+      // over the dev server. The WASM assets live under src/, inside root.
+      allow: ['.'],
     },
   },
 })

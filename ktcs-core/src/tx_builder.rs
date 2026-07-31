@@ -184,7 +184,8 @@ impl TransactionBuilder {
         };
 
         // Calculate total input
-        let total_input: u64 = self.inputs
+        let total_input: u64 = self
+            .inputs
             .iter()
             .map(|(u, _)| u.amount)
             .try_fold(0u64, |acc, amount| acc.checked_add(amount))
@@ -241,12 +242,13 @@ impl TransactionBuilder {
         let change_amount = total_input - total_required;
 
         // Check dust threshold - if change is below dust, absorb it into the fee
-        let (final_change_amount, final_fee) = if change_amount > 0 && change_amount < DUST_THRESHOLD {
-            // Absorb dust change into the fee
-            (0, fee + change_amount)
-        } else {
-            (change_amount, fee)
-        };
+        let (final_change_amount, final_fee) =
+            if change_amount > 0 && change_amount < DUST_THRESHOLD {
+                // Absorb dust change into the fee
+                (0, fee + change_amount)
+            } else {
+                (change_amount, fee)
+            };
 
         // Add outputs
         tx.add_output(commitment_output);
@@ -279,26 +281,56 @@ impl Default for TransactionBuilder {
     }
 }
 
-/// Estimate transaction mass for fee calculation
+/// Estimate transaction mass for fee calculation.
 ///
-/// Kaspa uses "mass" as a measure of transaction resource consumption.
+/// This is an APPROXIMATION of Kaspa KIP-9 *compute* mass, NOT an exact
+/// consensus computation, and it is intentionally separate from KIP-9 *storage*
+/// mass (which penalizes tiny outputs — we handle that by folding sub-`DUST_THRESHOLD`
+/// change into the fee). Unlike the old Bitcoin `10 + 148/in + 34/out` vbyte
+/// model, this accounts for:
+///   - serialized transaction size (`MASS_PER_TX_BYTE`),
+///   - per-output scriptPubKey bytes (`MASS_PER_SCRIPT_PUBKEY_BYTE`), and
+///   - per-input signature-operation cost (`MASS_PER_SIG_OP`).
+/// The per-unit constants mirror rusty-kaspa's `MassCalculator` defaults; the
+/// serialized-size figures are rounded estimates for standard P2PK inputs/outputs.
 fn estimate_transaction_mass(num_inputs: usize, num_outputs: usize) -> Result<u64> {
-    // Approximate mass values (should match Kaspa consensus rules)
-    const BASE_MASS: u64 = 10;
-    const INPUT_MASS: u64 = 148; // Typical P2PKH input
-    const OUTPUT_MASS: u64 = 34; // Typical P2PKH output
+    // KIP-9 compute-mass per-unit weights (rusty-kaspa defaults).
+    const MASS_PER_TX_BYTE: u64 = 1;
+    const MASS_PER_SCRIPT_PUBKEY_BYTE: u64 = 10;
+    const MASS_PER_SIG_OP: u64 = 1000;
 
-    let input_total = INPUT_MASS
-        .checked_mul(num_inputs as u64)
-        .ok_or_else(|| KtcsError::Other("Input mass overflow".to_string()))?;
-    let output_total = OUTPUT_MASS
-        .checked_mul(num_outputs as u64)
-        .ok_or_else(|| KtcsError::Other("Output mass overflow".to_string()))?;
+    // Rounded serialized sizes (bytes) for standard P2PK elements.
+    const TX_OVERHEAD_BYTES: u64 = 34; // version, in/out counts, locktime, subnetwork(20), gas, payload-len
+    const BYTES_PER_INPUT: u64 = 151; // outpoint(36) + sig script(~67) + sequence(8) + sigOpCount(1) + length prefixes
+    const BYTES_PER_OUTPUT: u64 = 45; // value(8) + spk version(2) + script(~34) + length prefix
+    const SCRIPT_PUBKEY_BYTES_PER_OUTPUT: u64 = 34; // canonical P2PK script length
 
-    BASE_MASS
-        .checked_add(input_total)
-        .and_then(|v| v.checked_add(output_total))
-        .ok_or_else(|| KtcsError::Other("Total mass overflow".to_string()))
+    let inputs = num_inputs as u64;
+    let outputs = num_outputs as u64;
+    let overflow = || KtcsError::Other("Transaction mass overflow".to_string());
+
+    // Serialized size component.
+    let size_bytes = TX_OVERHEAD_BYTES
+        .checked_add(BYTES_PER_INPUT.checked_mul(inputs).ok_or_else(overflow)?)
+        .and_then(|v| v.checked_add(BYTES_PER_OUTPUT.checked_mul(outputs)?))
+        .ok_or_else(overflow)?;
+    let size_mass = size_bytes
+        .checked_mul(MASS_PER_TX_BYTE)
+        .ok_or_else(overflow)?;
+
+    // Per-output scriptPubKey-byte component.
+    let scriptpubkey_mass = SCRIPT_PUBKEY_BYTES_PER_OUTPUT
+        .checked_mul(outputs)
+        .and_then(|v| v.checked_mul(MASS_PER_SCRIPT_PUBKEY_BYTE))
+        .ok_or_else(overflow)?;
+
+    // Per-input sig-op component.
+    let sigop_mass = inputs.checked_mul(MASS_PER_SIG_OP).ok_or_else(overflow)?;
+
+    size_mass
+        .checked_add(scriptpubkey_mass)
+        .and_then(|v| v.checked_add(sigop_mass))
+        .ok_or_else(overflow)
 }
 
 /// Convert a Kaspa address to a script public key
@@ -338,9 +370,12 @@ pub fn address_to_script(address: &str) -> Result<ScriptPublicKey> {
     }
 }
 
-/// Select UTXOs to cover the required amount plus fee
+/// Select UTXOs to cover the required amount plus fee.
 ///
-/// Uses a simple "largest first" selection algorithm.
+/// Uses a simple "largest first" selection algorithm with checked arithmetic
+/// (guards against a maliciously-crafted UTXO set overflowing the running sum)
+/// and duplicate-outpoint detection (the same `transaction_id:index` must not
+/// appear twice, which would let a caller "double count" a single UTXO).
 pub fn select_utxos(
     available: &[Utxo],
     target_amount: u64,
@@ -348,6 +383,18 @@ pub fn select_utxos(
 ) -> Result<(Vec<Utxo>, u64)> {
     if available.is_empty() {
         return Err(KtcsError::Other("No UTXOs available".to_string()));
+    }
+
+    // Reject duplicate outpoints up front.
+    let mut seen_outpoints: HashSet<([u8; 32], u32)> = HashSet::new();
+    for utxo in available {
+        if !seen_outpoints.insert((utxo.transaction_id, utxo.index)) {
+            return Err(KtcsError::Other(format!(
+                "Duplicate UTXO in selection set: {}:{}",
+                hex::encode(utxo.transaction_id),
+                utxo.index
+            )));
+        }
     }
 
     // Sort by amount descending
@@ -401,6 +448,28 @@ pub fn create_commitment(nonce: &[u8], data_hash: &[u8; 32]) -> [u8; 32] {
     data.extend_from_slice(nonce);
     data.extend_from_slice(data_hash);
     sha256(&data)
+}
+
+/// Generate a cryptographically secure random 16-byte nonce for commitments.
+///
+/// Uses the system CSPRNG via getrandom.
+#[cfg(feature = "keygen")]
+pub fn generate_nonce() -> Result<[u8; 16]> {
+    let mut nonce = [0u8; 16];
+    getrandom::getrandom(&mut nonce)
+        .map_err(|e| KtcsError::Other(format!("Failed to generate random nonce: {}", e)))?;
+    Ok(nonce)
+}
+
+/// Fallback when secure RNG is unavailable (kaspa-client without keygen).
+///
+/// Secure nonce generation requires the `keygen` feature; this errors rather
+/// than fabricate a weak nonce.
+#[cfg(all(feature = "kaspa-client", not(feature = "keygen")))]
+pub fn generate_nonce() -> Result<[u8; 16]> {
+    Err(KtcsError::Other(
+        "Secure nonce generation requires the 'keygen' feature".to_string(),
+    ))
 }
 
 /// A simple transfer transaction (no commitment)
@@ -477,7 +546,8 @@ impl TransferTransactionBuilder {
 
         let dest_script = address_to_script(&destination)?;
 
-        let total_input: u64 = self.inputs
+        let total_input: u64 = self
+            .inputs
             .iter()
             .map(|u| u.amount)
             .try_fold(0u64, |acc, amount| acc.checked_add(amount))
@@ -662,6 +732,65 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Duplicate UTXO"));
+    }
+
+    #[test]
+    fn test_select_utxos_covers_burn_plus_fee() {
+        use crate::kaspa_types::COMMITMENT_BURN_AMOUNT;
+
+        // No single UTXO covers the burn, but the set does. Selection must
+        // accumulate enough to cover COMMITMENT_BURN_AMOUNT + fee (target =
+        // burn; select_utxos adds the fee internally).
+        let utxos = vec![
+            create_test_utxo(8_000_000, 0),
+            create_test_utxo(8_000_000, 1),
+            create_test_utxo(8_000_000, 2),
+        ];
+
+        let (selected, total) = select_utxos(&utxos, COMMITMENT_BURN_AMOUNT, 10).unwrap();
+
+        // The estimated fee for the selected inputs (2 outputs: burn + change).
+        let fee = estimate_transaction_mass(selected.len(), 2).unwrap() * 10;
+        assert!(
+            total >= COMMITMENT_BURN_AMOUNT + fee,
+            "selected {} < burn {} + fee {}",
+            total,
+            COMMITMENT_BURN_AMOUNT,
+            fee
+        );
+        // All three 8M UTXOs are needed to exceed 20M + fee.
+        assert_eq!(selected.len(), 3);
+    }
+
+    #[test]
+    fn test_select_utxos_rejects_duplicates() {
+        let utxos = vec![
+            create_test_utxo(50_000_000, 0),
+            create_test_utxo(50_000_000, 0), // same outpoint
+        ];
+        let result = select_utxos(&utxos, 10_000_000, 1);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Duplicate UTXO"));
+    }
+
+    #[test]
+    fn test_select_utxos_overflow_is_checked() {
+        // Two near-u64::MAX UTXOs would overflow a naive running sum; the
+        // checked arithmetic must surface an error rather than wrap.
+        let utxos = vec![create_test_utxo(u64::MAX, 0), create_test_utxo(u64::MAX, 1)];
+        // Target larger than any single UTXO forces summing both.
+        let result = select_utxos(&utxos, u64::MAX, 1);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("overflow"));
+    }
+
+    #[cfg(feature = "keygen")]
+    #[test]
+    fn test_generate_nonce() {
+        let n1 = generate_nonce().unwrap();
+        let n2 = generate_nonce().unwrap();
+        assert_ne!(n1, n2);
+        assert_eq!(n1.len(), 16);
     }
 
     #[test]

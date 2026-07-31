@@ -7,6 +7,7 @@ use tokio_tungstenite::connect_async;
 
 /// Try SID-based URL formats
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn diagnose_sid_based_endpoints() {
     println!("\n");
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -18,10 +19,7 @@ async fn diagnose_sid_based_endpoints() {
     // SID: 35eb6927b1cbf034 (peers: 30, clients: 922)
     // SID: 45cd71bf52cf29be (peers: 23, clients: 683)
 
-    let sids = vec![
-        "35eb6927b1cbf034",
-        "45cd71bf52cf29be",
-    ];
+    let sids = vec!["35eb6927b1cbf034", "45cd71bf52cf29be"];
 
     let uids = vec![
         "86ea7de5c88424dd", // online node
@@ -32,35 +30,66 @@ async fn diagnose_sid_based_endpoints() {
 
     // Try various URL patterns with SID/UID
     for sid in &sids {
-        endpoints.push((format!("wss://pnn.kaspa.stream/wrpc/{}", sid), format!("PNN wrpc/{}", &sid[..8])));
-        endpoints.push((format!("wss://pnn.kaspa.stream/{}", sid), format!("PNN /{}", &sid[..8])));
-        endpoints.push((format!("wss://pnn.kaspa.stream/node/{}", sid), format!("PNN node/{}", &sid[..8])));
-        endpoints.push((format!("wss://{}.pnn.kaspa.stream/", sid), format!("SID.pnn.kaspa.stream")));
+        endpoints.push((
+            format!("wss://pnn.kaspa.stream/wrpc/{}", sid),
+            format!("PNN wrpc/{}", &sid[..8]),
+        ));
+        endpoints.push((
+            format!("wss://pnn.kaspa.stream/{}", sid),
+            format!("PNN /{}", &sid[..8]),
+        ));
+        endpoints.push((
+            format!("wss://pnn.kaspa.stream/node/{}", sid),
+            format!("PNN node/{}", &sid[..8]),
+        ));
+        endpoints.push((
+            format!("wss://{}.pnn.kaspa.stream/", sid),
+            format!("SID.pnn.kaspa.stream"),
+        ));
     }
 
     for uid in &uids {
-        endpoints.push((format!("wss://pnn.kaspa.stream/wrpc/{}", uid), format!("PNN wrpc/{}", &uid[..8])));
-        endpoints.push((format!("wss://pnn.kaspa.stream/{}", uid), format!("PNN /{}", &uid[..8])));
+        endpoints.push((
+            format!("wss://pnn.kaspa.stream/wrpc/{}", uid),
+            format!("PNN wrpc/{}", &uid[..8]),
+        ));
+        endpoints.push((
+            format!("wss://pnn.kaspa.stream/{}", uid),
+            format!("PNN /{}", &uid[..8]),
+        ));
     }
 
     // Try alternative hosts
-    endpoints.push(("wss://wrpc.kaspa.stream/borsh/testnet-10".to_string(), "wrpc.kaspa.stream".to_string()));
-    endpoints.push(("wss://tn10.kaspa.stream/".to_string(), "tn10.kaspa.stream".to_string()));
-    endpoints.push(("wss://testnet.kaspa.stream/".to_string(), "testnet.kaspa.stream".to_string()));
+    endpoints.push((
+        "wss://wrpc.kaspa.stream/borsh/testnet-10".to_string(),
+        "wrpc.kaspa.stream".to_string(),
+    ));
+    endpoints.push((
+        "wss://tn10.kaspa.stream/".to_string(),
+        "tn10.kaspa.stream".to_string(),
+    ));
+    endpoints.push((
+        "wss://testnet.kaspa.stream/".to_string(),
+        "testnet.kaspa.stream".to_string(),
+    ));
 
     // Try Kaspa Labs endpoints
-    endpoints.push(("wss://kaspa-labs.io/wrpc/testnet-10".to_string(), "kaspa-labs wrpc".to_string()));
-    endpoints.push(("wss://api.kaspa.org/wrpc/testnet-10".to_string(), "api.kaspa.org wrpc".to_string()));
+    endpoints.push((
+        "wss://kaspa-labs.io/wrpc/testnet-10".to_string(),
+        "kaspa-labs wrpc".to_string(),
+    ));
+    endpoints.push((
+        "wss://api.kaspa.org/wrpc/testnet-10".to_string(),
+        "api.kaspa.org wrpc".to_string(),
+    ));
 
     let mut working = vec![];
 
     for (url, name) in &endpoints {
         print!("Testing {:<35} ... ", name);
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(8),
-            connect_async(url.as_str())
-        ).await;
+        let result =
+            tokio::time::timeout(Duration::from_secs(8), connect_async(url.as_str())).await;
 
         match result {
             Ok(Ok((ws, response))) => {
@@ -101,6 +130,7 @@ async fn diagnose_sid_based_endpoints() {
 
 /// Try the official Kaspa resolver SDK approach
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_kaspa_resolver_format() {
     println!("\n=== Testing Official Kaspa Resolver Format ===\n");
 
@@ -144,6 +174,7 @@ async fn test_kaspa_resolver_format() {
 
 /// Try direct Kaspa node ports (local or known public)
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_direct_ports() {
     println!("\n=== Testing Direct Port Connections ===\n");
 
@@ -156,7 +187,6 @@ async fn test_direct_ports() {
         ("ws://localhost:17210", "localhost:17210 (wRPC)"),
         ("ws://localhost:16210", "localhost:16210 (gRPC)"),
         ("ws://127.0.0.1:17210", "127.0.0.1:17210"),
-
         // Standard testnet ports on known hosts
         ("wss://testnet.kaspa.org:17210", "testnet.kaspa.org:17210"),
     ];
@@ -188,6 +218,7 @@ async fn test_direct_ports() {
 
 /// Verify basic HTTPS connectivity to PNN
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_pnn_https() {
     println!("\n=== Testing PNN HTTPS Connectivity ===\n");
 
@@ -216,7 +247,11 @@ async fn test_pnn_https() {
     print!("Fetching https://pnn.kaspa.stream/        ... ");
     match client.get("https://pnn.kaspa.stream/").send().await {
         Ok(resp) => {
-            println!("Status: {} ({})", resp.status(), resp.content_length().unwrap_or(0));
+            println!(
+                "Status: {} ({})",
+                resp.status(),
+                resp.content_length().unwrap_or(0)
+            );
         }
         Err(e) => {
             println!("✗ {}", e);

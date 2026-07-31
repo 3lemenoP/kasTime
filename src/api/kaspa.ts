@@ -28,42 +28,6 @@ export interface KaspaBlockInfo {
   isChainBlock: boolean;
 }
 
-// Signed transaction for submission
-export interface KaspaSignedTransaction {
-  version: number;
-  inputs: Array<{
-    previousOutpoint: {
-      transactionId: string;
-      index: number;
-    };
-    signatureScript: string; // hex
-    sequence: bigint;
-    sigOpCount: number;
-  }>;
-  outputs: Array<{
-    value: bigint;
-    scriptPublicKey: {
-      version: number;
-      scriptPublicKey: string;
-    };
-  }>;
-  lockTime: bigint;
-  subnetworkId: string;
-}
-
-// Transaction acceptance info
-export interface TransactionAcceptance {
-  transactionId: string;
-  blockHash: string;
-}
-
-type RpcCallback = (result: unknown, error?: RpcError) => void;
-
-interface RpcError {
-  code: number;
-  message: string;
-}
-
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -82,9 +46,11 @@ interface PendingRequest {
 export class KaspaClient {
   private ws: WebSocket | null = null;
   private rpcUrl: string;
-  private requestId = 0;
+  // Start well above the fixed id (1) that the WASM-built raw request uses in
+  // sendRawRequest, so counter-based ids from sendRequest can never collide
+  // with it in pendingRequests (which would cross-route responses).
+  private requestId = 1000;
   private pendingRequests: Map<number, PendingRequest> = new Map();
-  private eventCallbacks: Map<string, RpcCallback[]> = new Map();
   private connectPromise: Promise<void> | null = null;
   private requestTimeout = 30000; // 30 seconds
   private connected = false;
@@ -247,16 +213,6 @@ export class KaspaClient {
           }
         }
       }
-
-      // Handle notification/event
-      if (response.method) {
-        const callbacks = this.eventCallbacks.get(response.method);
-        if (callbacks) {
-          for (const callback of callbacks) {
-            callback(response.params);
-          }
-        }
-      }
     } catch (e) {
       console.error('[Kaspa] Failed to parse message:', e);
     }
@@ -315,57 +271,6 @@ export class KaspaClient {
     const jsonRequest = createRpcRequest(signedTxJson);
     const result = await this.sendRawRequest<{ transactionId: string }>(jsonRequest);
     return result.transactionId;
-  }
-
-  /** @deprecated Use submitTransactionFromWasm instead to avoid precision loss */
-  async submitTransaction(_tx: KaspaSignedTransaction): Promise<string> {
-    throw new Error('Deprecated: Use submitTransactionFromWasm to avoid BigInt precision loss');
-  }
-
-  /**
-   * Get transaction by ID
-   */
-  async getTransaction(txId: string): Promise<{
-    transactionId: string;
-    blockHash?: string;
-    payload?: string;
-    outputs: Array<{
-      value: bigint;
-      scriptPublicKey: string;
-    }>;
-  }> {
-    interface RpcTransaction {
-      version: number;
-      inputs: Array<{
-        previousOutpoint: { transactionId: string; index: number };
-        signatureScript: string;
-      }>;
-      outputs: Array<{
-        value: string;
-        scriptPublicKey: { version: number; scriptPublicKey: string };
-      }>;
-      payload?: string;
-    }
-
-    interface RpcResult {
-      transaction: RpcTransaction;
-      blockHash?: string;
-    }
-
-    const result = await this.sendRequest<RpcResult>(
-      'getTransaction',
-      { transactionId: txId }
-    );
-
-    return {
-      transactionId: txId,
-      blockHash: result.blockHash,
-      payload: result.transaction.payload,
-      outputs: result.transaction.outputs.map(o => ({
-        value: BigInt(o.value),
-        scriptPublicKey: o.scriptPublicKey.scriptPublicKey,
-      })),
-    };
   }
 
   /**
@@ -554,111 +459,19 @@ export class KaspaClient {
   }
 
   /**
-   * Get virtual chain from block
-   * Used to find which block accepted a transaction
-   */
-  async getVirtualChainFromBlock(
-    startHash: string,
-    includeAcceptedTransactionIds: boolean
-  ): Promise<{
-    addedChainBlockHashes: string[];
-    acceptedTransactionIds: TransactionAcceptance[];
-  }> {
-    interface RpcResult {
-      addedChainBlockHashes: string[];
-      acceptedTransactionIds: Array<{
-        acceptingBlockHash: string;
-        acceptedTransactionIds: string[];
-      }>;
-    }
-
-    const result = await this.sendRequest<RpcResult>(
-      'getVirtualChainFromBlock',
-      { startHash, includeAcceptedTransactionIds }
-    );
-
-    const acceptedTxs: TransactionAcceptance[] = [];
-    if (result.acceptedTransactionIds) {
-      for (const block of result.acceptedTransactionIds) {
-        for (const txId of block.acceptedTransactionIds) {
-          acceptedTxs.push({
-            transactionId: txId,
-            blockHash: block.acceptingBlockHash,
-          });
-        }
-      }
-    }
-
-    return {
-      addedChainBlockHashes: result.addedChainBlockHashes || [],
-      acceptedTransactionIds: acceptedTxs,
-    };
-  }
-
-  /**
-   * Subscribe to virtual chain changes
-   * Returns unsubscribe function
-   */
-  subscribeToVirtualChainChanged(
-    callback: (data: {
-      addedChainBlockHashes: string[];
-      acceptedTransactionIds: TransactionAcceptance[];
-    }) => void
-  ): () => void {
-    const method = 'notifyVirtualChainChanged';
-
-    // Add callback
-    const callbacks = this.eventCallbacks.get(method) || [];
-    const wrappedCallback: RpcCallback = (params) => {
-      const data = params as {
-        addedChainBlockHashes: string[];
-        acceptedTransactionIds: Array<{
-          acceptingBlockHash: string;
-          acceptedTransactionIds: string[];
-        }>;
-      };
-
-      const acceptedTxs: TransactionAcceptance[] = [];
-      if (data.acceptedTransactionIds) {
-        for (const block of data.acceptedTransactionIds) {
-          for (const txId of block.acceptedTransactionIds) {
-            acceptedTxs.push({
-              transactionId: txId,
-              blockHash: block.acceptingBlockHash,
-            });
-          }
-        }
-      }
-
-      callback({
-        addedChainBlockHashes: data.addedChainBlockHashes || [],
-        acceptedTransactionIds: acceptedTxs,
-      });
-    };
-
-    callbacks.push(wrappedCallback);
-    this.eventCallbacks.set(method, callbacks);
-
-    // Subscribe
-    this.sendRequest('notifyVirtualChainChanged', {
-      includeAcceptedTransactionIds: true,
-    }).catch((e) => console.error('[Kaspa] Subscribe error:', e));
-
-    // Return unsubscribe function
-    return () => {
-      const cbs = this.eventCallbacks.get(method);
-      if (cbs) {
-        const idx = cbs.indexOf(wrappedCallback);
-        if (idx >= 0) cbs.splice(idx, 1);
-      }
-    };
-  }
-
-  /**
-   * Wait for a transaction to be accepted in a block
+   * Wait for a transaction to be accepted in a block.
    *
-   * Uses the same approach as ktcs-core: poll DAG tips and check
-   * verboseData.transactionIds for our transaction.
+   * Each poll seeds a breadth-first walk from the current DAG tips and descends
+   * through parent generations, checking every block's verboseData transaction
+   * ids for our tx. Blocks are remembered across polls (`checkedBlocks`), so the
+   * walk naturally terminates when it reaches the frontier explored previously —
+   * meaning newly produced blocks are always covered and a tx that has already
+   * slipped a few generations below the tips between polls is still found (the
+   * old "tips + one parent level" scan would miss it and time out spuriously).
+   *
+   * On timeout the burn is already committed on-chain, so we throw a recoverable
+   * error that carries the txId — the caller must surface it so the user can
+   * recover their proof rather than being left with burned funds and nothing.
    */
   async waitForTransactionAcceptance(
     txId: string,
@@ -667,74 +480,72 @@ export class KaspaClient {
     console.log(`[Kaspa] Waiting for transaction ${txId} confirmation...`);
 
     const startTime = Date.now();
-    const pollInterval = 100; // Poll every 100ms like calendar server
+    // A relaxed interval avoids hammering the public endpoint; the cross-poll
+    // frontier below means we no longer need an aggressive 100ms cadence.
+    const pollInterval = 1500;
+    // Safety cap on how deep to descend from the tips in a single poll. In
+    // practice the walk stops earlier when it hits already-checked blocks.
+    const maxGenerationsPerCycle = 30;
     const checkedBlocks = new Set<string>();
-    let pollCount = 0;
 
     while (Date.now() - startTime < timeoutMs) {
-      pollCount++;
       try {
-        // Get current DAG tips
         const dagInfo = await this.getBlockDagInfo();
 
-        if (pollCount <= 3 || pollCount % 50 === 0) {
-          console.log(`[Kaspa] Poll #${pollCount}: ${dagInfo.tipHashes.length} tips, checked ${checkedBlocks.size} blocks`);
-        }
+        // BFS frontier seeded from the current tips; descend into parents.
+        let frontier = dagInfo.tipHashes.filter((h) => !checkedBlocks.has(h));
+        let generation = 0;
 
-        // Check each tip block for our transaction
-        for (const tipHash of dagInfo.tipHashes) {
-          if (checkedBlocks.has(tipHash)) continue;
+        while (frontier.length > 0 && generation < maxGenerationsPerCycle) {
+          const nextFrontier: string[] = [];
 
-          try {
-            const block = await this.getBlockWithTransactions(tipHash);
-            checkedBlocks.add(tipHash);
+          for (const blockHash of frontier) {
+            if (checkedBlocks.has(blockHash)) continue;
 
-            // Debug: log first few blocks' transaction counts
-            if (checkedBlocks.size <= 5) {
-              console.log(`[Kaspa] Block ${tipHash.slice(0, 16)}... has ${block.transactionIds.length} txs`);
-              if (block.transactionIds.length > 0 && block.transactionIds.length <= 3) {
-                console.log(`[Kaspa]   TxIds: ${block.transactionIds.join(', ')}`);
+            try {
+              const block = await this.getBlockWithTransactions(blockHash);
+              checkedBlocks.add(blockHash);
+
+              if (block.transactionIds.includes(txId)) {
+                console.log(`[Kaspa] Transaction ${txId} confirmed in block ${blockHash} at DAA score ${block.daaScore}`);
+                const blockInfo = await this.getBlockByHash(blockHash);
+                return { txId, blockHash, blockInfo };
               }
-            }
 
-            // Check if our transaction is in this block
-            if (block.transactionIds.includes(txId)) {
-              console.log(`[Kaspa] Transaction ${txId} confirmed in block ${tipHash} at DAA score ${block.daaScore}`);
-              const blockInfo = await this.getBlockByHash(tipHash);
-              return { txId, blockHash: tipHash, blockInfo };
-            }
-
-            // Also check parent blocks
-            for (const parentHash of block.parentHashes) {
-              if (checkedBlocks.has(parentHash)) continue;
-
-              try {
-                const parentBlock = await this.getBlockWithTransactions(parentHash);
-                checkedBlocks.add(parentHash);
-
-                if (parentBlock.transactionIds.includes(txId)) {
-                  console.log(`[Kaspa] Transaction ${txId} confirmed in parent block ${parentHash} at DAA score ${parentBlock.daaScore}`);
-                  const blockInfo = await this.getBlockByHash(parentHash);
-                  return { txId, blockHash: parentHash, blockInfo };
+              for (const parentHash of block.parentHashes) {
+                if (!checkedBlocks.has(parentHash)) {
+                  nextFrontier.push(parentHash);
                 }
-              } catch (e) {
-                console.log(`[Kaspa] Parent block fetch error:`, e);
               }
+            } catch (e) {
+              // Mark as checked so a persistently-bad block doesn't cause a
+              // tight refetch loop; it will still be reachable via other paths.
+              checkedBlocks.add(blockHash);
+              console.log(`[Kaspa] Block fetch error for ${blockHash.slice(0, 16)}...:`, e);
             }
-          } catch (e) {
-            console.log(`[Kaspa] Block fetch error for ${tipHash.slice(0, 16)}...:`, e);
           }
+
+          frontier = nextFrontier;
+          generation++;
+
+          // Stop descending if we've run out of time mid-walk.
+          if (Date.now() - startTime >= timeoutMs) break;
         }
       } catch (e) {
         console.log('[Kaspa] DAG info fetch failed, retrying...', e);
       }
 
-      // Wait before next poll
       await new Promise((r) => setTimeout(r, pollInterval));
     }
 
     console.log(`[Kaspa] Timeout: checked ${checkedBlocks.size} blocks, tx ${txId} not found`);
-    throw new Error(`Transaction ${txId} confirmation timeout after ${timeoutMs}ms`);
+    const error = new Error(
+      `Transaction was submitted but not confirmed within ${Math.round(timeoutMs / 1000)}s. ` +
+        `The burn may still confirm on-chain — save this transaction id to recover your proof: ${txId}`
+    ) as Error & { txId: string; recoverable: boolean };
+    error.txId = txId;
+    error.recoverable = true;
+    throw error;
   }
 }
 
@@ -756,7 +567,7 @@ export const KASPA_PUBLIC_ENDPOINTS = {
  * Create a Kaspa client with the default mainnet endpoint
  */
 export function createKaspaClient(
-  rpcUrl = KASPA_PUBLIC_ENDPOINTS.mainnet[0].url
+  rpcUrl: string = KASPA_PUBLIC_ENDPOINTS.mainnet[0].url
 ): KaspaClient {
   return new KaspaClient(rpcUrl);
 }

@@ -43,11 +43,19 @@ pub fn apply_operation(current: &[u8], op: &Operation) -> Result<Vec<u8>> {
 /// Maximum number of operations allowed to prevent CPU DoS attacks
 pub const MAX_OPERATIONS_TO_APPLY: usize = 10_000;
 
+/// Maximum cumulative intermediate-state size (in bytes) allowed while applying
+/// operations. Each op datum may be up to 1 MB and up to 10,000 ops are
+/// permitted; Append/Prepend can otherwise grow the running state to ~10 GB with
+/// O(n^2) copying from a legal-but-huge `.kts`. This bound caps the working set
+/// so proof application cannot be turned into a memory/CPU DoS.
+pub const MAX_STATE_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+
 /// Apply a sequence of operations to a starting digest
 ///
 /// # Errors
 ///
-/// Returns an error if the number of operations exceeds `MAX_OPERATIONS_TO_APPLY`.
+/// Returns an error if the number of operations exceeds `MAX_OPERATIONS_TO_APPLY`
+/// or if the cumulative intermediate state grows beyond `MAX_STATE_SIZE`.
 pub fn apply_operations(digest: &[u8], operations: &[Operation]) -> Result<Vec<u8>> {
     if operations.len() > MAX_OPERATIONS_TO_APPLY {
         return Err(KtcsError::InvalidData(format!(
@@ -60,7 +68,28 @@ pub fn apply_operations(digest: &[u8], operations: &[Operation]) -> Result<Vec<u
     let mut current = digest.to_vec();
 
     for op in operations {
+        // Bound the state BEFORE growing it further: reject if the next
+        // Append/Prepend would push the running state past the cap.
+        if let Operation::Append(data) | Operation::Prepend(data) = op {
+            if current.len().saturating_add(data.len()) > MAX_STATE_SIZE {
+                return Err(KtcsError::InvalidData(format!(
+                    "Intermediate state size would exceed limit {} bytes",
+                    MAX_STATE_SIZE
+                )));
+            }
+        }
+
         current = apply_operation(&current, op)?;
+
+        // Defensive: also cap after hashing ops (they shrink, but keep the
+        // invariant explicit).
+        if current.len() > MAX_STATE_SIZE {
+            return Err(KtcsError::InvalidData(format!(
+                "Intermediate state size {} exceeds limit {} bytes",
+                current.len(),
+                MAX_STATE_SIZE
+            )));
+        }
     }
 
     Ok(current)
@@ -139,10 +168,7 @@ mod tests {
     #[test]
     fn test_apply_operations_sequence() {
         let digest = vec![0x01, 0x02];
-        let operations = vec![
-            Operation::Append(vec![0x03, 0x04]),
-            Operation::Sha256,
-        ];
+        let operations = vec![Operation::Append(vec![0x03, 0x04]), Operation::Sha256];
 
         let result = apply_operations(&digest, &operations).unwrap();
 
@@ -179,10 +205,7 @@ mod tests {
     fn test_merkle_proof_operations() {
         // Simulate a Merkle proof with one sibling on the right
         let sibling = [0xcd; 32];
-        let operations = vec![
-            Operation::Append(sibling.to_vec()),
-            Operation::Sha256,
-        ];
+        let operations = vec![Operation::Append(sibling.to_vec()), Operation::Sha256];
 
         let leaf = [0xab; 32];
         let result = apply_operations(&leaf, &operations).unwrap();
@@ -194,6 +217,28 @@ mod tests {
         let expected = hasher.finalize().to_vec();
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_apply_operations_state_size_cap() {
+        // A sequence of large Append ops that cumulatively exceeds MAX_STATE_SIZE
+        // must be rejected rather than allowed to balloon memory.
+        let digest = vec![0u8; 32];
+        let chunk = vec![0xAAu8; 1024 * 1024]; // 1 MB (== MAX_OPERATION_DATA_SIZE)
+                                               // 11 x 1MB appends -> 11 MB > 10 MB cap.
+        let operations: Vec<Operation> =
+            (0..11).map(|_| Operation::Append(chunk.clone())).collect();
+
+        let result = apply_operations(&digest, &operations);
+        assert!(
+            result.is_err(),
+            "oversized cumulative state must be rejected"
+        );
+        assert!(result.unwrap_err().to_string().contains("exceed"));
+
+        // A modest sequence well under the cap still succeeds.
+        let small_ops = vec![Operation::Append(vec![0x01; 1024]), Operation::Sha256];
+        assert!(apply_operations(&digest, &small_ops).is_ok());
     }
 
     #[test]

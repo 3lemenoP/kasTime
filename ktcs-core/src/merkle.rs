@@ -7,6 +7,14 @@ use crate::error::{KtcsError, Result};
 use crate::types::Operation;
 use sha2::{Digest, Sha256};
 
+/// Domain-separation prefix for leaf hashing: `leaf_node = SHA256(0x00 || leaf)`.
+///
+/// Distinct leaf/node prefixes prevent the CVE-2012-2459 second-preimage
+/// ambiguity where an internal node could be re-presented as a leaf.
+pub const LEAF_PREFIX: u8 = 0x00;
+/// Domain-separation prefix for internal nodes: `node = SHA256(0x01 || l || r)`.
+pub const NODE_PREFIX: u8 = 0x01;
+
 /// A Merkle tree node position indicator
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Position {
@@ -43,14 +51,23 @@ impl MerkleProof {
         computed_root == self.root
     }
 
-    /// Compute the root from the leaf and siblings
+    /// Compute the root from the leaf and siblings.
+    ///
+    /// A single-leaf tree (no siblings) has the raw leaf as its root. Otherwise
+    /// the raw leaf is first domain-separated into a leaf node
+    /// (`SHA256(0x00 || leaf)`) and combined upward with node hashing
+    /// (`SHA256(0x01 || l || r)`).
     pub fn compute_root(&self) -> [u8; 32] {
-        let mut current = self.leaf;
+        if self.siblings.is_empty() {
+            return self.leaf;
+        }
+
+        let mut current = hash_leaf(&self.leaf);
 
         for sibling in &self.siblings {
             current = match sibling.position {
-                Position::Left => hash_pair(&sibling.hash, &current),
-                Position::Right => hash_pair(&current, &sibling.hash),
+                Position::Left => hash_node(&sibling.hash, &current),
+                Position::Right => hash_node(&current, &sibling.hash),
             };
         }
 
@@ -59,22 +76,34 @@ impl MerkleProof {
 
     /// Convert this Merkle proof to KTCS operations
     ///
-    /// The operations will transform the leaf hash into the root hash
-    /// through a series of append/prepend and SHA256 operations.
+    /// The operations transform the raw leaf into the root hash through a series
+    /// of prepend/append and SHA256 operations, including the leaf and node
+    /// domain-separation prefixes so replay matches the tree's hashing exactly.
     pub fn to_operations(&self) -> Vec<Operation> {
         let mut ops = Vec::new();
+
+        // Single-leaf tree: the leaf is the root; identity transform.
+        if self.siblings.is_empty() {
+            return ops;
+        }
+
+        // Leaf domain separation: leaf_node = SHA256(0x00 || leaf)
+        ops.push(Operation::Prepend(vec![LEAF_PREFIX]));
+        ops.push(Operation::Sha256);
 
         for sibling in &self.siblings {
             match sibling.position {
                 Position::Left => {
-                    // Sibling is on the left, so we prepend it
+                    // Sibling on the left: prepend it -> sibling || current
                     ops.push(Operation::Prepend(sibling.hash.to_vec()));
                 }
                 Position::Right => {
-                    // Sibling is on the right, so we append it
+                    // Sibling on the right: append it -> current || sibling
                     ops.push(Operation::Append(sibling.hash.to_vec()));
                 }
             }
+            // Node domain separation: node = SHA256(0x01 || ...)
+            ops.push(Operation::Prepend(vec![NODE_PREFIX]));
             ops.push(Operation::Sha256);
         }
 
@@ -112,8 +141,11 @@ impl MerkleTree {
 
         let mut layers = Vec::new();
 
+        // Bottom layer holds DOMAIN-SEPARATED leaf hashes (SHA256(0x00 || leaf)),
+        // not the raw leaves, so an internal node can never be re-presented as a
+        // leaf. Raw leaves are retained separately in `self.leaves` for indexing.
+        let mut current_layer: Vec<[u8; 32]> = leaves.iter().map(hash_leaf).collect();
         // Pad to even number if necessary (duplicate last element)
-        let mut current_layer = leaves.clone();
         if current_layer.len() % 2 != 0 {
             current_layer.push(*current_layer.last().unwrap());
         }
@@ -124,7 +156,7 @@ impl MerkleTree {
             let mut next_layer = Vec::new();
 
             for chunk in current_layer.chunks(2) {
-                let hash = hash_pair(&chunk[0], &chunk[1]);
+                let hash = hash_node(&chunk[0], &chunk[1]);
                 next_layer.push(hash);
             }
 
@@ -174,7 +206,8 @@ impl MerkleTree {
             debug_assert!(
                 layer_index < layer.len(),
                 "Merkle proof index {} out of bounds for layer of size {}",
-                layer_index, layer.len()
+                layer_index,
+                layer.len()
             );
             let sibling_index = if layer_index % 2 == 0 {
                 layer_index + 1
@@ -215,9 +248,22 @@ impl MerkleTree {
     }
 }
 
-/// Hash two 32-byte values together using SHA256
-fn hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+/// Hash a raw leaf with the leaf domain-separation prefix: `SHA256(0x00 || leaf)`.
+fn hash_leaf(leaf: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Sha256::new();
+    hasher.update([LEAF_PREFIX]);
+    hasher.update(leaf);
+    let result = hasher.finalize();
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&result);
+    hash
+}
+
+/// Hash two child nodes with the node domain-separation prefix:
+/// `SHA256(0x01 || left || right)`.
+fn hash_node(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update([NODE_PREFIX]);
     hasher.update(left);
     hasher.update(right);
     let result = hasher.finalize();
@@ -271,21 +317,21 @@ mod tests {
 
         assert_eq!(tree.len(), 2);
 
-        // Root should be hash of both leaves
-        let expected_root = hash_pair(&leaves[0], &leaves[1]);
+        // Root should be node-hash of the two domain-separated leaf hashes.
+        let expected_root = hash_node(&hash_leaf(&leaves[0]), &hash_leaf(&leaves[1]));
         assert_eq!(tree.root(), expected_root);
 
-        // Test proofs
+        // Test proofs. Siblings at the leaf level are the HASHED leaf values.
         let proof0 = tree.get_proof(0).unwrap();
         assert!(proof0.verify());
         assert_eq!(proof0.siblings.len(), 1);
-        assert_eq!(proof0.siblings[0].hash, leaves[1]);
+        assert_eq!(proof0.siblings[0].hash, hash_leaf(&leaves[1]));
         assert_eq!(proof0.siblings[0].position, Position::Right);
 
         let proof1 = tree.get_proof(1).unwrap();
         assert!(proof1.verify());
         assert_eq!(proof1.siblings.len(), 1);
-        assert_eq!(proof1.siblings[0].hash, leaves[0]);
+        assert_eq!(proof1.siblings[0].hash, hash_leaf(&leaves[0]));
         assert_eq!(proof1.siblings[0].position, Position::Left);
     }
 
@@ -326,10 +372,21 @@ mod tests {
         let proof = tree.get_proof(0).unwrap();
         let ops = proof.to_operations();
 
-        // Should have: append sibling, sha256
-        assert_eq!(ops.len(), 2);
-        assert!(matches!(&ops[0], Operation::Append(data) if data == &leaves[1].to_vec()));
+        // With domain separation the ops are:
+        //   Prepend(0x00), Sha256      -> leaf hash
+        //   Append(hash_leaf(sibling)), Prepend(0x01), Sha256 -> node hash
+        assert_eq!(ops.len(), 5);
+        assert!(matches!(&ops[0], Operation::Prepend(data) if data == &vec![LEAF_PREFIX]));
         assert!(matches!(&ops[1], Operation::Sha256));
+        assert!(
+            matches!(&ops[2], Operation::Append(data) if data == &hash_leaf(&leaves[1]).to_vec())
+        );
+        assert!(matches!(&ops[3], Operation::Prepend(data) if data == &vec![NODE_PREFIX]));
+        assert!(matches!(&ops[4], Operation::Sha256));
+
+        // The ops must replay the leaf to the tree root.
+        let replayed = crate::ops::apply_operations(&leaves[0], &ops).unwrap();
+        assert_eq!(replayed, tree.root().to_vec());
     }
 
     #[test]
@@ -356,8 +413,9 @@ mod tests {
         let hash = sha256(data);
 
         // Known SHA256 of "hello world"
-        let expected = hex::decode("b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9")
-            .unwrap();
+        let expected =
+            hex::decode("b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9")
+                .unwrap();
         assert_eq!(hash.to_vec(), expected);
     }
 

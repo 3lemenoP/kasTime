@@ -22,6 +22,7 @@ use ktcs_core::kaspa::{KaspaClient, KaspaClientConfig};
 /// Test mainnet connection via resolver
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_connection() {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -53,6 +54,7 @@ async fn test_mainnet_connection() {
 /// Test DAG info retrieval and verify mainnet values
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_dag_info() {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -65,7 +67,10 @@ async fn test_mainnet_dag_info() {
 
     println!("→ Fetching BlockDAG info...");
 
-    let dag_info = client.get_block_dag_info().await.expect("Failed to get DAG info");
+    let dag_info = client
+        .get_block_dag_info()
+        .await
+        .expect("Failed to get DAG info");
 
     println!("✓ Network:      {}", dag_info.network);
     println!("✓ DAA Score:    {}", dag_info.current_daa_score);
@@ -103,6 +108,7 @@ async fn test_mainnet_dag_info() {
 /// Test individual chain metrics
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_chain_metrics() {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -115,7 +121,10 @@ async fn test_mainnet_chain_metrics() {
 
     // DAA Score
     println!("→ Fetching DAA score...");
-    let daa = client.get_current_daa_score().await.expect("Failed to get DAA score");
+    let daa = client
+        .get_current_daa_score()
+        .await
+        .expect("Failed to get DAA score");
     println!("✓ DAA Score: {}", daa);
     assert!(daa > 300_000_000, "DAA score too low");
 
@@ -123,19 +132,30 @@ async fn test_mainnet_chain_metrics() {
     // Note: getBlockDagInfo doesn't return blue_score in Kaspa wRPC JSON format
     // It returns 0 by default. To get actual blue score, we'd need to query a specific block.
     println!("→ Fetching Blue score (from DAG info)...");
-    let blue = client.get_current_blue_score().await.expect("Failed to get blue score");
-    println!("✓ Blue Score from DAG info: {} (0 is expected - use block query for actual)", blue);
+    let blue = client
+        .get_current_blue_score()
+        .await
+        .expect("Failed to get blue score");
+    println!(
+        "✓ Blue Score from DAG info: {} (0 is expected - use block query for actual)",
+        blue
+    );
     // Don't assert > 0 since DAG info doesn't include blue score
 
     // Blue Work
     // Note: getBlockDagInfo doesn't return blue work in Kaspa wRPC JSON format
     // To get actual blue work, we'd need to query a specific block.
     println!("→ Fetching Blue work (from DAG info)...");
-    let blue_work = client.get_current_blue_work().await.expect("Failed to get blue work");
+    let blue_work = client
+        .get_current_blue_work()
+        .await
+        .expect("Failed to get blue work");
     // Find first non-zero byte for display
     let non_zero = blue_work.iter().position(|&b| b != 0).unwrap_or(31);
-    println!("✓ Blue Work from DAG info: 0x{}... (may be zero - use block query for actual)",
-        hex::encode(&blue_work[non_zero..non_zero.saturating_add(8).min(32)]));
+    println!(
+        "✓ Blue Work from DAG info: 0x{}... (may be zero - use block query for actual)",
+        hex::encode(&blue_work[non_zero..non_zero.saturating_add(8).min(32)])
+    );
     // Don't assert non-zero since DAG info doesn't include blue work
 
     client.disconnect().await.ok();
@@ -145,6 +165,7 @@ async fn test_mainnet_chain_metrics() {
 /// Test UTXO query with a known mainnet address
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_utxo_query() {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -167,11 +188,20 @@ async fn test_mainnet_utxo_query() {
 
             if !utxos.is_empty() {
                 let total: u64 = utxos.iter().map(|u| u.amount).sum();
-                println!("  Total balance: {} sompi ({:.8} KAS)", total, total as f64 / 100_000_000.0);
+                println!(
+                    "  Total balance: {} sompi ({:.8} KAS)",
+                    total,
+                    total as f64 / 100_000_000.0
+                );
 
                 // Show first few UTXOs
                 for (i, utxo) in utxos.iter().take(3).enumerate() {
-                    println!("  UTXO {}: {} sompi (DAA: {})", i + 1, utxo.amount, utxo.block_daa_score);
+                    println!(
+                        "  UTXO {}: {} sompi (DAA: {})",
+                        i + 1,
+                        utxo.amount,
+                        utxo.block_daa_score
+                    );
                 }
             }
         }
@@ -188,6 +218,7 @@ async fn test_mainnet_utxo_query() {
 /// Test block query with a known hash
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_block_query() {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -199,7 +230,10 @@ async fn test_mainnet_block_query() {
     client.connect().await.expect("Failed to connect");
 
     // Get current DAG info to find a recent block
-    let dag_info = client.get_block_dag_info().await.expect("Failed to get DAG info");
+    let dag_info = client
+        .get_block_dag_info()
+        .await
+        .expect("Failed to get DAG info");
 
     if !dag_info.tip_hashes.is_empty() {
         let tip_hash = &dag_info.tip_hashes[0];
@@ -213,7 +247,10 @@ async fn test_mainnet_block_query() {
                 println!("  Blue Score: {}", block.blue_score);
                 println!("  Timestamp:  {}", block.timestamp);
                 println!("  Parents:    {} block(s)", block.parent_hashes.len());
-                println!("  TXs:        {} transaction(s)", block.transaction_ids.len());
+                println!(
+                    "  TXs:        {} transaction(s)",
+                    block.transaction_ids.len()
+                );
 
                 // Verify hash matches
                 assert_eq!(&block.hash, tip_hash, "Block hash mismatch");
@@ -238,6 +275,7 @@ async fn test_mainnet_block_query() {
 /// Run: cargo test --package ktcs-core --test mainnet_integration test_mainnet_wallet_generation --features "kaspa-client keygen" -- --nocapture
 #[cfg(all(feature = "kaspa-client", feature = "keygen"))]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_wallet_generation() {
     use ktcs_core::wallet::generate_wallet;
 
@@ -257,10 +295,11 @@ async fn test_mainnet_wallet_generation() {
     println!("  Address:     {}", wallet.address());
     println!();
 
-    // Save to file for later use
-    let key_file = "mainnet-test-wallet.key";
-    std::fs::write(key_file, &private_key_hex).expect("Failed to save wallet key");
-    println!("  ✓ Saved to: {}", key_file);
+    // Save to a file inside the OS temp dir (NOT the current working directory)
+    // so a plaintext mainnet private key is never dropped into the repo/CWD.
+    let key_file = std::env::temp_dir().join("mainnet-test-wallet.key");
+    std::fs::write(&key_file, private_key_hex.as_str()).expect("Failed to save wallet key");
+    println!("  ✓ Saved to: {}", key_file.display());
     println!();
 
     println!("  To use this wallet for transaction tests:");
@@ -272,7 +311,10 @@ async fn test_mainnet_wallet_generation() {
     println!();
 
     // Verify address format
-    assert!(wallet.address().starts_with("kaspa:"), "Address should start with kaspa:");
+    assert!(
+        wallet.address().starts_with("kaspa:"),
+        "Address should start with kaspa:"
+    );
 
     println!("═══════════════════════════════════════════════════════════");
 }
@@ -289,12 +331,11 @@ async fn test_mainnet_check_balance() {
     println!("═══════════════════════════════════════════════════════════");
 
     // Read wallet from environment or file
-    let wallet_address = std::env::var("KTCS_TEST_ADDRESS")
-        .unwrap_or_else(|_| {
-            println!("⚠️  Set KTCS_TEST_ADDRESS environment variable to your test wallet address");
-            println!("    Example: set KTCS_TEST_ADDRESS=kaspa:qz...");
-            String::new()
-        });
+    let wallet_address = std::env::var("KTCS_TEST_ADDRESS").unwrap_or_else(|_| {
+        println!("⚠️  Set KTCS_TEST_ADDRESS environment variable to your test wallet address");
+        println!("    Example: set KTCS_TEST_ADDRESS=kaspa:qz...");
+        String::new()
+    });
 
     if wallet_address.is_empty() {
         println!("✗ No wallet address configured");
@@ -319,7 +360,9 @@ async fn test_mainnet_check_balance() {
 
             if balance >= 10_000_000 {
                 println!("  ✓ Wallet has sufficient funds for transaction test!");
-                println!("    Run: cargo test test_mainnet_stamp_transaction -- --ignored --nocapture");
+                println!(
+                    "    Run: cargo test test_mainnet_stamp_transaction -- --ignored --nocapture"
+                );
             } else {
                 println!("  ⚠️  Need at least 0.1 KAS (10,000,000 sompi) for transaction test");
                 println!("    Current: {:.8} KAS", kas);
@@ -339,9 +382,11 @@ async fn test_mainnet_check_balance() {
 #[tokio::test]
 #[ignore] // Run manually after funding wallet
 async fn test_mainnet_stamp_transaction() {
-    use ktcs_core::direct::{complete_stamp, prepare_direct_stamp, sign_transaction, DirectStampConfig, DirectBlockInfo};
-    use ktcs_core::wallet::KaspaWallet;
+    use ktcs_core::direct::{
+        complete_stamp, prepare_direct_stamp, sign_transaction, DirectBlockInfo, DirectStampConfig,
+    };
     use ktcs_core::verify::verify_proof;
+    use ktcs_core::wallet::KaspaWallet;
 
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -356,8 +401,7 @@ async fn test_mainnet_stamp_transaction() {
     let wallet_hex = std::env::var("KTCS_TEST_WALLET")
         .expect("Set KTCS_TEST_WALLET environment variable to your wallet private key (hex)");
 
-    let wallet = KaspaWallet::from_hex(&wallet_hex, "kaspa")
-        .expect("Invalid wallet key");
+    let wallet = KaspaWallet::from_hex(&wallet_hex, "kaspa").expect("Invalid wallet key");
 
     println!("  Wallet address: {}", wallet.address());
 
@@ -373,12 +417,13 @@ async fn test_mainnet_stamp_transaction() {
         .expect("Failed to get UTXOs");
 
     let balance: u64 = utxos.iter().map(|u| u.amount).sum();
-    println!("  Balance: {} sompi ({:.8} KAS)", balance, balance as f64 / 100_000_000.0);
-
-    assert!(
-        balance >= 10_000_000,
-        "Need at least 0.1 KAS for this test"
+    println!(
+        "  Balance: {} sompi ({:.8} KAS)",
+        balance,
+        balance as f64 / 100_000_000.0
     );
+
+    assert!(balance >= 10_000_000, "Need at least 0.1 KAS for this test");
 
     // Prepare stamp with timestamp
     let timestamp = std::time::SystemTime::now()
@@ -394,14 +439,20 @@ async fn test_mainnet_stamp_transaction() {
         .await
         .expect("Failed to prepare stamp");
 
-    println!("  Commitment: {}...", hex::encode(&prepared.commitment[..8]));
+    println!(
+        "  Commitment: {}...",
+        hex::encode(&prepared.commitment[..8])
+    );
     println!("  Est. Fee:   {} sompi", prepared.estimated_fee);
 
     // Sign transaction
     println!();
     println!("→ Signing transaction...");
 
-    let tx = prepared.transaction.as_ref().expect("No transaction prepared");
+    let tx = prepared
+        .transaction
+        .as_ref()
+        .expect("No transaction prepared");
     let utxos_for_sign = prepared.utxos.as_ref().expect("No UTXOs in prepared stamp");
     let signed_tx = sign_transaction(&tx.transaction, &wallet, utxos_for_sign)
         .expect("Failed to sign transaction");
@@ -441,14 +492,14 @@ async fn test_mainnet_stamp_transaction() {
         parent_hashes: block_info.parent_hashes,
     };
 
-    let proof = complete_stamp(prepared, direct_block_info, tx_hash)
-        .expect("Failed to complete stamp");
+    let proof =
+        complete_stamp(prepared, direct_block_info, tx_hash).expect("Failed to complete stamp");
 
     // Verify proof
     println!();
     println!("→ Verifying proof...");
-    let verification = verify_proof(&proof, Some(test_data.as_bytes()))
-        .expect("Proof verification failed");
+    let verification =
+        verify_proof(&proof, Some(test_data.as_bytes())).expect("Proof verification failed");
     println!("✓ Proof verified: valid={}", verification.valid);
 
     println!();
@@ -456,7 +507,10 @@ async fn test_mainnet_stamp_transaction() {
     println!("  MAINNET STAMP TEST COMPLETED SUCCESSFULLY!");
     println!("═══════════════════════════════════════════════════════════");
     println!("  TX: {}", hex::encode(tx_hash));
-    println!("  View: https://explorer.kaspa.org/txs/{}", hex::encode(tx_hash));
+    println!(
+        "  View: https://explorer.kaspa.org/txs/{}",
+        hex::encode(tx_hash)
+    );
     println!("═══════════════════════════════════════════════════════════");
 
     client.disconnect().await.ok();
@@ -469,6 +523,7 @@ async fn test_mainnet_stamp_transaction() {
 /// Run all read-only mainnet tests in sequence
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_comprehensive() {
     println!("\n");
     println!("╔═══════════════════════════════════════════════════════════╗");
@@ -487,25 +542,44 @@ async fn test_mainnet_comprehensive() {
     println!("\n[2/5] Testing DAG info...");
     let dag = client.get_block_dag_info().await.expect("DAG info failed");
     assert_eq!(dag.network, "mainnet");
-    println!("      ✓ Network: {} | DAA: {}", dag.network, dag.current_daa_score);
+    println!(
+        "      ✓ Network: {} | DAA: {}",
+        dag.network, dag.current_daa_score
+    );
 
     // 3. Chain Metrics
     println!("\n[3/5] Testing chain metrics...");
-    let daa = client.get_current_daa_score().await.expect("DAA score failed");
-    let blue = client.get_current_blue_score().await.expect("Blue score failed");
+    let daa = client
+        .get_current_daa_score()
+        .await
+        .expect("DAA score failed");
+    let blue = client
+        .get_current_blue_score()
+        .await
+        .expect("Blue score failed");
     println!("      ✓ DAA: {} | Blue: {}", daa, blue);
 
     // 4. Blue Work
     println!("\n[4/5] Testing blue work...");
-    let work = client.get_current_blue_work().await.expect("Blue work failed");
+    let work = client
+        .get_current_blue_work()
+        .await
+        .expect("Blue work failed");
     let non_zero = work.iter().position(|&b| b != 0).unwrap_or(31);
-    println!("      ✓ Blue work: 0x{}...", hex::encode(&work[non_zero..non_zero.saturating_add(4).min(32)]));
+    println!(
+        "      ✓ Blue work: 0x{}...",
+        hex::encode(&work[non_zero..non_zero.saturating_add(4).min(32)])
+    );
 
     // 5. Block Query
     println!("\n[5/5] Testing block query...");
     if let Some(tip) = dag.tip_hashes.first() {
         match client.get_block_by_hash(tip).await {
-            Ok(block) => println!("      ✓ Block {} | TXs: {}", hex::encode(&block.hash[..4]), block.transaction_ids.len()),
+            Ok(block) => println!(
+                "      ✓ Block {} | TXs: {}",
+                hex::encode(&block.hash[..4]),
+                block.transaction_ids.len()
+            ),
             Err(e) => println!("      ○ Block query: {} (tip may have changed)", e),
         }
     }

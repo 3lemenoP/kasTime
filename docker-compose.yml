@@ -41,7 +41,17 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        # /api is proxied to calendar server by nginx
+        # VITE_CALENDAR_URL is baked into the JS bundle at BUILD time and must
+        # match how nginx is wired.
+        #
+        # This Docker stack uses the "/api" convention: the frontend calls
+        # <origin>/api/... and deploy/nginx/frontend.conf proxies /api/ ->
+        # http://calendar:3001/ (stripping the /api prefix). WebSocket
+        # (/api/v1/stream) is upgraded by the same location block.
+        #
+        # NOTE: a frontend image built here does NOT work behind the bare-metal
+        # deploy/nginx/ktcs.conf, which expects same-origin /v1 (no /api prefix).
+        # For that deployment, build with VITE_CALENDAR_URL="" (same-origin).
         VITE_CALENDAR_URL: /api
     container_name: ktcs-frontend
     restart: unless-stopped

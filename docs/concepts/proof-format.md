@@ -111,6 +111,14 @@ Attestations prove the commitment is anchored to a blockchain. A proof may conta
 |-----|------|-------------|
 | `0x83` | Pending | Incomplete proof, requires calendar upgrade |
 | `0x84` | Kaspa Block | Complete proof anchored to Kaspa |
+| `0x05` | Bitcoin | Cross-chain anchor to a Bitcoin block (OpenTimestamps-style dual anchor) |
+
+!!! note "Spec-strict parsers must accept `0x05`"
+    A Bitcoin attestation tag `0x05` exists in the reference implementation
+    (`ktcs-core/src/types.rs`). Its payload is a single 4-byte little-endian
+    Bitcoin block height. A strictly conformant parser must recognize `0x05` in
+    addition to `0x83`/`0x84` or it will reject otherwise-valid files.
+
 ### Pending Attestation (`0x83`)
 
 Indicates the proof is incomplete and needs to be upgraded via the calendar server.
@@ -146,6 +154,18 @@ Complete proof anchored to the Kaspa blockchain.
 - **Blue Score**: Count of blue blocks in the GHOSTDAG selected chain
 - **Blue Work**: Cumulative proof-of-work (thermodynamic weight) at this block
 - **Parent Hashes**: Captures DAG structure for concurrent event analysis
+
+### Bitcoin Attestation (`0x05`)
+
+Optional cross-chain anchor to a Bitcoin block (OpenTimestamps-style dual
+anchoring). Payload is a single 4-byte little-endian Bitcoin block height.
+
+```
++--------+----------------------+
+| 0x05   | block height         |
+| 1 byte | uint32 LE (4 bytes)  |
++--------+----------------------+
+```
 
 ## On-Chain Commitment Format
 
@@ -269,6 +289,14 @@ VERIFY(proof_bytes, original_data):
     thermodynamic_security: blue_work_accumulated
   }
 ```
+
+!!! note "Offline vs. on-chain steps"
+    Steps 1–3 (parse, hash-match, replay operations) plus a structural check of
+    the attestation are the **offline** path — they prove the proof is
+    self-consistent but not that it is anchored on-chain. Step 4 (fetching the
+    block/transaction from a Kaspa node, with an **exact P2PK burn-script**
+    match on the commitment) and step 5 are the **on-chain** path. Reference
+    results expose separate `structurally_valid` and `chain_verified` flags.
 
 ## File Extension
 

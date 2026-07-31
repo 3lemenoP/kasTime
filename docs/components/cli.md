@@ -18,15 +18,25 @@ cargo build --release -p ktcs-cli
 
 Create a timestamp for a file via calendar or direct on-chain.
 
-!!! note "Calendar Mode Status"
-    Calendar mode currently creates a pending proof locally. For full calendar
-    integration, use the web interface or API to submit digests, then use
-    `ktcs upgrade` to complete pending proofs. Direct stamping (`--direct`)
-    is fully implemented.
+Calendar mode submits the digest (`POST /v1/stamp`) to the configured calendar
+server. In the default synchronous mode it polls for confirmation and verifies
+the returned proof before writing it; with `--async` it writes a pending proof
+immediately, to be finished later with `ktcs complete`. Direct stamping
+(`--direct`) needs no calendar.
+
+!!! warning "Configure your own calendar"
+    There is no public calendar service. The built-in per-network default host
+    (`calendar.ktcs.kaspa.org` / `testnet-calendar.ktcs.kaspa.org`) is **not
+    live**. Point `ktcs stamp` at a calendar you control via `--calendar`, the
+    `KTCS_CALENDAR_URL` environment variable, or the config file — or use
+    `--direct` mode.
 
 ```bash
-# Via calendar (creates pending proof)
+# Via calendar (submits digest, waits for confirmation)
 ktcs stamp document.pdf
+
+# Return immediately with a pending proof
+ktcs stamp --async document.pdf
 
 # Direct on-chain (requires wallet)
 ktcs stamp --direct --wallet-file ./wallet.key document.pdf
@@ -45,14 +55,20 @@ ktcs stamp --calendar https://calendar.example.com document.pdf
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--calendar` | `-c` | `https://calendar.ktcs.kaspa.org` | Calendar server URL |
+| `--calendar` | `-c` | per-network built-in (not live — configure your own) | Calendar server URL |
 | `--mode` | `-m` | `standard` | Batch mode: `instant`, `standard`, `economic` |
 | `--output` | `-o` | `<input>.kts` | Output file path |
 | `--direct` | | `false` | Stamp directly on-chain |
+| `--async` | | `false` | Return a pending proof immediately (complete later with `ktcs complete`) |
 | `--wallet-file` | | | Path to wallet private key file |
 | `--wallet-stdin` | | | Read wallet key from stdin |
-| `--rpc-url` | | `ws://localhost:16110` | Kaspa RPC URL (direct mode) |
+| `--rpc-url` | | derived from `--network` | Kaspa RPC URL (direct mode) |
 | `--network` | | `testnet` | Network: `mainnet`, `testnet` |
+
+The RPC port is derived from the network when `--rpc-url` is not set: mainnet
+`ws://localhost:16110`, testnet `ws://localhost:16210`. Precedence for
+calendar/RPC/network values: CLI flag > environment variable > config file >
+built-in default.
 
 ---
 
@@ -74,11 +90,17 @@ ktcs verify --chain document.kts
 
 **Options:**
 
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--data` | `-d` | Original data file for full verification |
-| `--chain` | | Verify attestation exists on blockchain |
-| `--rpc-url` | | Kaspa RPC URL for chain verification (default: mainnet resolver) |
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--data` | `-d` | | Original data file for full verification |
+| `--chain` | | `false` | Verify the attestation on-chain (requires network) |
+| `--network` | | `mainnet` | Network for chain verification: `mainnet`, `testnet` |
+| `--rpc-url` | | derived from `--network` | Kaspa RPC URL for chain verification |
+
+`ktcs verify` exits non-zero (1) when the proof is invalid, and when a `--chain`
+check fails. Offline verification (no `--chain`) proves the proof is
+cryptographically and structurally consistent with a complete Kaspa
+attestation; it does not prove on-chain inclusion. Use `--chain` for that.
 
 **Output:**
 
@@ -139,16 +161,19 @@ Attestations: 1
 
 ---
 
-### `ktcs upgrade` - Upgrade Pending Proof
+### `ktcs complete` - Complete Pending Proof
 
-Upgrade a pending proof by fetching the attestation from the calendar.
+Complete a pending proof by fetching the confirmed attestation from the
+calendar. The returned proof is verified before being written.
+
+> `ktcs upgrade` is an alias for `ktcs complete`.
 
 ```bash
-# Upgrade in place
-ktcs upgrade document.kts
+# Complete in place
+ktcs complete document.kts
 
 # Save to new file
-ktcs upgrade -o completed.kts document.kts
+ktcs complete -o completed.kts document.kts
 ```
 
 **Options:**
@@ -156,6 +181,50 @@ ktcs upgrade -o completed.kts document.kts
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--output` | `-o` | Overwrite input | Output file |
+
+---
+
+### `ktcs status` - Show Proof Status
+
+```bash
+ktcs status document.kts
+ktcs status --json document.kts
+```
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON |
+
+---
+
+### `ktcs config` - Manage Configuration
+
+Read and write the TOML config file (per-network sections wired into `stamp`,
+`verify`, and `wallet`).
+
+```bash
+ktcs config init            # create with defaults
+ktcs config init --force    # overwrite existing
+ktcs config show            # print effective config
+ktcs config show --network testnet
+ktcs config set network testnet
+ktcs config set mainnet.rpc_url ws://127.0.0.1:16110
+ktcs config path            # print config file path
+```
+
+The file lives at the platform config dir, e.g.
+`~/.config/ktcs/config.toml` on Linux (`ktcs config path` prints the exact
+path).
+
+---
+
+### `ktcs completions` - Shell Completions
+
+```bash
+ktcs completions bash > /etc/bash_completion.d/ktcs
+ktcs completions zsh
+ktcs completions fish
+```
 
 ---
 
@@ -232,30 +301,39 @@ UTXOs: 3
 
 ## Global Options
 
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--verbose` | `-v` | Enable verbose/debug output |
-| `--help` | `-h` | Show help |
-| `--version` | `-V` | Show version |
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--verbose` | `-v` | `false` | Enable verbose/debug output |
+| `--quiet` | `-q` | `false` | Suppress banners and progress; keep errors and essential results |
+| `--color` | | `auto` | Color output: `auto`, `always`, `never` (also honors `NO_COLOR`) |
+| `--help` | `-h` | | Show help |
+| `--version` | `-V` | | Show version |
+
+## Command Aliases
+
+`s` → `stamp`, `v` → `verify`, `i` → `info`, `c` / `upgrade` → `complete`,
+`w` → `wallet`, `gen` → `wallet generate`.
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `KTCS_CALENDAR_URL` | Default calendar URL |
-| `KTCS_RPC_URL` | Default Kaspa RPC URL |
-| `RUST_LOG` | Logging level (e.g., `ktcs=debug`) |
+| `KTCS_CALENDAR_URL` | Default calendar URL (overrides config file, below CLI flags) |
+| `KTCS_RPC_URL` | Default Kaspa RPC URL (overrides config file, below CLI flags) |
+| `NO_COLOR` | Disable colored output (same as `--color never`) |
+| `RUST_LOG` | Logging filter when `--verbose` is set (e.g., `ktcs_cli=debug`) |
 
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Error (any failure) |
+| 1 | Runtime error (I/O, network, invalid or failed verification) |
+| 2 | Usage error (bad arguments, from the argument parser) |
 
-!!! note "Exit Code Details"
-    The CLI currently uses a single non-zero exit code (1) for all error conditions.
-    Future versions may implement more specific exit codes for scripting purposes.
+There are only three exit codes. `1` covers every runtime failure — including
+an invalid proof or a failed `--chain` check — and `2` is emitted by the
+argument parser for usage errors.
 
 ## Security
 
@@ -288,9 +366,9 @@ chmod 600 wallet.key
 ktcs stamp important-document.pdf
 # Output: important-document.pdf.kts created (pending)
 
-# 2. Wait for confirmation, then upgrade
-ktcs upgrade important-document.pdf.kts
-# Output: Proof upgraded successfully
+# 2. If stamped with --async, complete it once confirmed
+ktcs complete important-document.pdf.kts
+# Output: Proof completed successfully
 
 # 3. Verify
 ktcs verify -d important-document.pdf important-document.pdf.kts

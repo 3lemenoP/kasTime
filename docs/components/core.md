@@ -73,13 +73,17 @@ use ktcs_core::{verify_proof, deserialize_proof};
 let proof_bytes = std::fs::read("document.kts")?;
 let proof = deserialize_proof(&proof_bytes)?;
 
-// Verify against original data
+// Verify against original data. `verify_proof` is OFFLINE: it does not prove
+// chain inclusion (see `chain_verified`).
 let document = std::fs::read("document.pdf")?;
 let result = verify_proof(&proof, Some(&document))?;
 
 if result.valid {
-    println!("Proof is valid!");
-    println!("Timestamp: {:?}", result.attestations[0].timestamp);
+    println!("Proof is valid (offline)!");
+    println!("structurally valid: {}", result.structurally_valid);
+    println!("chain verified:     {}", result.chain_verified); // false offline
+    // Attestation specifics live in `result.attestations[i].details`
+    // (an enum: Pending { .. } | Kaspa { daa_score, timestamp, .. } | Bitcoin { .. }).
 }
 ```
 
@@ -154,17 +158,23 @@ Blockchain anchors:
 pub enum Attestation {
     Pending(PendingAttestation),
     Kaspa(KaspaAttestation),
+    Bitcoin(BitcoinAttestation),   // tag 0x05, cross-chain anchor
 }
 
 pub struct KaspaAttestation {
+    pub version: u8,
     pub daa_score: u64,
     pub blue_score: u64,
     pub block_hash: [u8; 32],
     pub timestamp: u64,
     pub tx_hash: [u8; 32],
     pub tx_index: u32,
-    pub blue_work: Vec<u8>,
+    pub blue_work: [u8; 32],
     pub parent_hashes: Vec<[u8; 32]>,
+}
+
+pub struct BitcoinAttestation {
+    pub block_height: u32,
 }
 ```
 
@@ -205,7 +215,8 @@ let proof = deserialize_proof(&bytes)?;
 Build P2PK commitment outputs:
 
 ```rust
-use ktcs_core::kaspa::{build_commitment_output, COMMITMENT_BURN_AMOUNT};
+// Re-exported at the crate root from the always-available `kaspa_types` module.
+use ktcs_core::{build_commitment_output, COMMITMENT_BURN_AMOUNT};
 
 let commitment = sha256(b"merkle_root");
 let output = build_commitment_output(&commitment);

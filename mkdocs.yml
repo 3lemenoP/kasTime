@@ -1,8 +1,8 @@
 site_name: KTCS Documentation
 site_description: Kaspa Thermodynamic Clock Service - Trustless timestamping powered by Kaspa's BlockDAG
-site_url: https://ktcs.kaspa.org
-repo_url: https://github.com/aspect-build/ktcs
-repo_name: ktcs
+site_url: https://kastime.xyz/docs
+repo_url: https://github.com/3lemenoP/kasTime
+repo_name: 3lemenoP/kasTime
 
 theme:
   name: material
@@ -117,7 +117,7 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/aspect-build/ktcs
+      link: https://github.com/3lemenoP/kasTime
     - icon: fontawesome/brands/discord
       link: https://discord.gg/kaspa
   generator: false

@@ -122,7 +122,11 @@ function ProofPage(): JSX.Element {
         console.error('[KTCS] Failed to fetch stamp:', err)
         setError(err instanceof Error ? err.message : 'Failed to fetch stamp')
 
-        if (isMounted) {
+        // Stop polling on a definitive "not found": the stamp id does not exist
+        // on the server, so retrying forever is pointless. Surface it as a
+        // terminal error instead. (calendar.ts throws "Stamp not found: <id>".)
+        const isNotFound = err instanceof Error && err.message.startsWith('Stamp not found')
+        if (isMounted && !isNotFound) {
           pollTimeout = setTimeout(fetchStamp, 10000)
         }
       }
@@ -187,7 +191,11 @@ function ProofPage(): JSX.Element {
 
   const daaScoreNum = response?.daa_score ? parseInt(response.daa_score, 10) : 0
   const blueScoreNum = response?.blue_score ? parseInt(response.blue_score, 10) : 0
-  const documentHash = isDirectMode && directHash ? directHash : (response?.block_hash?.slice(0, 64) || '')
+  // The real document digest is the file hash held in the store (set at hashing
+  // time), for both direct and calendar flows. Never fall back to the block hash
+  // here — a block hash is NOT the document's sha256, and rendering it as such
+  // (sha256:<block hash>) would be a lie. If we don't have the digest, omit it.
+  const documentHash = directHash || ''
   const explorerUrl = response?.block_hash ? `https://explorer.kaspa.org/blocks/${response.block_hash}` : '#'
 
   return (

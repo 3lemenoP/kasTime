@@ -66,6 +66,7 @@ Document → SHA256 → Digest → Operations → Commitment → Kaspa TX → At
 │ ATTESTATIONS (1+ items, variable)           │
 │   ├─ Pending: 0x83 + varint len + URL       │
 │   ├─ Kaspa:   0x84 + attestation data       │
+│   ├─ Bitcoin: 0x05 + u32 LE block height    │
 │                                              │
 └─────────────────────────────────────────────┘
 ```
@@ -205,6 +206,10 @@ Example:
 └─ Pending tag
 ```
 
+> The host `calendar.ktcs.kaspa.org` in these captured example bytes is a
+> **placeholder and not a live service**. A real pending proof embeds whatever
+> calendar URL the client was configured with.
+
 ### 6.2 Kaspa Block Attestation (Tag: 0x84)
 
 Complete proof anchored to Kaspa blockchain.
@@ -230,6 +235,26 @@ Structure:
 | Blue Work     | 32      | Big-endian   | Cumulative proof-of-work              |
 | Parent Count  | varint  | -            | Number of parent blocks               |
 | Parent Hashes | N × 32  | Raw bytes    | Parent block hashes                   |
+
+### 6.3 Bitcoin Attestation (Tag: 0x05)
+
+Optional cross-chain anchor to a Bitcoin block (OpenTimestamps-style dual
+anchoring). This tag exists in the reference implementation
+(`ktcs-core/src/types.rs`); a strictly conformant parser must accept `0x05` in
+addition to `0x83`/`0x84`.
+
+```
+Structure:
+┌────┬──────────────────────┐
+│ 05 │ block height         │
+│ 1B │ uint32 LE (4 bytes)  │
+└────┴──────────────────────┘
+```
+
+| Field        | Size | Encoding    | Description           |
+|--------------|------|-------------|-----------------------|
+| Tag          | 1    | -           | 0x05                  |
+| Block Height | 4    | Little-end  | Bitcoin block height  |
 
 ---
 

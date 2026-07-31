@@ -145,7 +145,7 @@ const utxos = [
   {
     transaction_id: 'abc123...', // 32 bytes hex
     index: 0,
-    amount: 100000000,           // sompi
+    amount: '100000000',         // sompi, as a STRING (preserves u64 precision)
     script_public_key_hex: '...',
     block_daa_score: 42000000,
     is_coinbase: false,
@@ -314,7 +314,7 @@ interface VerificationResult {
 }
 
 interface AttestationInfo {
-  attestation_type: 'pending' | 'kaspa';
+  attestation_type: 'pending' | 'kaspa' | 'bitcoin';
   complete: boolean;
   daa_score?: number;
   blue_score?: number;
@@ -374,9 +374,13 @@ export async function verifyProof(proofBytes: Uint8Array) {
 
 ## Security Notes
 
-- Private keys are handled in WASM memory (not exposed to JS heap)
-- Use `crypto.getRandomValues` for all randomness
-- Never log or store private keys in browser storage
+- **Raw private keys entered in the browser DO live on the JS heap.** A key
+  passed to these functions is a JavaScript string before it reaches WASM; the
+  Rust side zeroizes its own copies but cannot scrub the JavaScript-held ones.
+  Treat raw-key direct stamping as at-your-own-risk; prefer calendar mode or a
+  low-value throwaway wallet for direct mode.
+- Use `crypto.getRandomValues` for all randomness (used internally for nonces).
+- Never log or persist private keys in browser storage.
 
 ## See Also
 

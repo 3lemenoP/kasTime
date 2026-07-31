@@ -6,8 +6,17 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Minimum output amount to avoid dust
-pub const DUST_THRESHOLD: u64 = 546;
+/// Practical minimum change-output amount, in sompi.
+///
+/// Kaspa does NOT use Bitcoin's fixed 546-sompi dust rule. Instead, KIP-9
+/// "storage mass" penalizes small outputs: a value-`v` output contributes
+/// roughly `STORAGE_MASS_PARAMETER / v` to the transaction mass, so tiny
+/// outputs become uneconomical (their mass-fee exceeds their value). We use a
+/// conservative practical floor here: change below this amount is folded into
+/// the fee rather than emitted as a near-worthless output. This is intentionally
+/// well above Bitcoin's 546 sompi. The exact economic minimum is governed by
+/// KIP-9 storage mass (see `estimate_transaction_mass`), not by this constant.
+pub const DUST_THRESHOLD: u64 = 1_000_000;
 
 /// Burn amount for commitment outputs (0.2 KAS = 20,000,000 sompi)
 pub const COMMITMENT_BURN_AMOUNT: u64 = 20_000_000;
@@ -147,7 +156,8 @@ pub struct Transaction {
 }
 
 /// Kaspa native subnetwork ID (all zeros for native transactions)
-pub const SUBNETWORK_ID_NATIVE: [u8; 20] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+pub const SUBNETWORK_ID_NATIVE: [u8; 20] =
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 impl Transaction {
     /// Create a new standard transaction
@@ -228,11 +238,15 @@ pub fn build_commitment_output(commitment: &[u8; 32]) -> TransactionOutput {
     }
 }
 
-/// Extract commitment from a P2PK burn output
-pub fn extract_commitment_from_output(output: &TransactionOutput) -> Option<[u8; 32]> {
-    let script = &output.script_public_key.script;
-
-    // P2PK format: 0x20 <32 bytes> 0xac
+/// Extract the 32-byte commitment from a raw output script IFF the script is
+/// EXACTLY the KTCS P2PK burn form `0x20 <32-byte commitment> 0xac`.
+///
+/// This is an exact structural match, not a byte scan: the script must be
+/// exactly 34 bytes, begin with the 32-byte push opcode `0x20`, and end with
+/// `OP_CHECKSIG` (`0xac`). Any other script (including change outputs, or a
+/// commitment appearing at a non-canonical offset) returns `None`.
+pub fn extract_commitment_from_script(script: &[u8]) -> Option<[u8; 32]> {
+    // P2PK burn format: 0x20 <32 bytes> 0xac  (exactly 34 bytes)
     if script.len() == 34 && script[0] == 0x20 && script[33] == 0xac {
         let mut commitment = [0u8; 32];
         commitment.copy_from_slice(&script[1..33]);
@@ -240,6 +254,12 @@ pub fn extract_commitment_from_output(output: &TransactionOutput) -> Option<[u8;
     } else {
         None
     }
+}
+
+/// Extract commitment from a P2PK burn output (exact-match; see
+/// [`extract_commitment_from_script`]).
+pub fn extract_commitment_from_output(output: &TransactionOutput) -> Option<[u8; 32]> {
+    extract_commitment_from_script(&output.script_public_key.script)
 }
 
 #[cfg(test)]
@@ -265,6 +285,39 @@ mod tests {
 
         let extracted = extract_commitment_from_output(&output);
         assert_eq!(extracted, Some(commitment));
+    }
+
+    #[test]
+    fn test_extract_commitment_exact_match_only() {
+        let commitment = [0xcd; 32];
+
+        // Exact burn script matches.
+        let exact = {
+            let mut s = vec![0x20];
+            s.extend_from_slice(&commitment);
+            s.push(0xac);
+            s
+        };
+        assert_eq!(extract_commitment_from_script(&exact), Some(commitment));
+
+        // Commitment embedded at a non-canonical offset must NOT match (naive
+        // byte-scan rejection). Prepend a byte and pad to keep 0xac last.
+        let mut embedded = vec![0x00, 0x20];
+        embedded.extend_from_slice(&commitment);
+        embedded.push(0xac);
+        assert_eq!(extract_commitment_from_script(&embedded), None);
+
+        // Wrong push opcode (0x21 = 33-byte push) must not match.
+        let mut wrong_push = vec![0x21];
+        wrong_push.extend_from_slice(&commitment);
+        wrong_push.push(0xac);
+        assert_eq!(extract_commitment_from_script(&wrong_push), None);
+
+        // Missing OP_CHECKSIG terminator must not match.
+        let mut no_checksig = vec![0x20];
+        no_checksig.extend_from_slice(&commitment);
+        no_checksig.push(0x00);
+        assert_eq!(extract_commitment_from_script(&no_checksig), None);
     }
 
     #[test]

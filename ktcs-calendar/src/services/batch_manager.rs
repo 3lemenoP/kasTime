@@ -85,7 +85,11 @@ impl BatchManager {
         }
 
         // Check if this is the first stamp for this mode and start batch timer
-        let is_first = inner.pending.get(&mode).map(|v| v.is_empty()).unwrap_or(true);
+        let is_first = inner
+            .pending
+            .get(&mode)
+            .map(|v| v.is_empty())
+            .unwrap_or(true);
         if is_first {
             inner.batch_start.insert(mode, Instant::now());
         }
