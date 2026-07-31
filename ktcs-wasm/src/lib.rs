@@ -701,8 +701,14 @@ fn build_sighash_transaction(tx: &Transaction, utxos: &[Utxo]) -> Result<Sighash
                 script_public_key_version: utxo.script_public_key.version,
                 script_public_key: utxo.script_public_key.script.clone(),
                 value: utxo.amount,
-                sequence: u64::MAX, // Kaspa standard - matches RPC submission
-                sig_op_count: 1, // Standard for P2PK
+                // The WASM `Transaction`/`TransactionInput` types carry no
+                // per-input sequence or sig_op_count, so these are assumed
+                // constant. They MUST match `create_submit_tx_rpc_request`
+                // (same u64::MAX / 1) and `compute_transaction_id`
+                // (ASSUMED_INPUT_SEQUENCE), otherwise the sighash, the
+                // submitted tx, and the computed txid would disagree.
+                sequence: u64::MAX,
+                sig_op_count: 1, // P2PK single-signature input
             })
         })
         .collect();
@@ -730,41 +736,98 @@ fn build_sighash_transaction(tx: &Transaction, utxos: &[Utxo]) -> Result<Sighash
     })
 }
 
-/// Compute transaction ID (double SHA256 of serialized transaction)
+/// Domain-separation key for the Kaspa transaction *ID* hash.
+///
+/// Kaspa hashes are keyed Blake2b-256 where the domain string is the Blake2b
+/// key (see rusty-kaspa `kaspa_hashes`: `TransactionID => b"TransactionID"`).
+/// This mirrors `ktcs_core::wallet`'s sighash hasher, which uses the same
+/// construction with the key `b"TransactionSigningHash"`.
+const TRANSACTION_ID_KEY: &[u8] = b"TransactionID";
+
+/// The `sequence` value assumed for every input.
+///
+/// Kaspa's transaction ID commits to each input's `sequence`, but the WASM
+/// [`Transaction`] type carries no per-input sequence field. KTCS builds and
+/// submits every input with `sequence = u64::MAX` (see the sighash builder in
+/// `build_sighash_transaction` and the RPC encoder in
+/// `create_submit_tx_rpc_request`), so the ID must be computed with the same
+/// constant to match the txid the node will assign. If the transaction type
+/// ever gains a real per-input sequence, thread it through here instead.
+const ASSUMED_INPUT_SEQUENCE: u64 = u64::MAX;
+
+/// Compute the real Kaspa transaction ID.
+///
+/// Kaspa computes the transaction ID as a keyed Blake2b-256 hash (domain key
+/// `"TransactionID"`) over the canonical consensus serialization of the
+/// transaction, with each input's signature script treated as EMPTY (the ID
+/// deliberately excludes signatures — the separate transaction *hash* is what
+/// includes them). This follows rusty-kaspa's `hashing::tx::id`/`id_v0` for
+/// version-0 transactions (`EXCLUDE_SIGNATURE_SCRIPT | EXCLUDE_MASS_COMMIT`),
+/// which is the only version KTCS ever builds.
+///
+/// The byte layout is verified against rusty-kaspa's own known-answer vectors
+/// in the unit tests below.
+///
+/// NOTE: this is the version-0 encoding. KTCS never constructs version >= 1
+/// transactions (`Transaction::new()` fixes `version = 0`); those use a
+/// different two-part digest and are intentionally not handled here.
 fn compute_transaction_id(tx: &Transaction) -> [u8; 32] {
-    // Simplified transaction ID computation
-    // In production, this should match Kaspa's exact serialization
-    let mut data = Vec::new();
+    compute_transaction_id_with_sequence(tx, ASSUMED_INPUT_SEQUENCE)
+}
 
-    // Version
-    data.extend_from_slice(&tx.version.to_le_bytes());
+/// Inner txid computation with an explicit per-input `sequence`.
+///
+/// Split out from [`compute_transaction_id`] so the known-answer tests can
+/// reproduce rusty-kaspa's fixtures (which use non-`u64::MAX` sequences)
+/// against the exact same encoding used in production.
+fn compute_transaction_id_with_sequence(tx: &Transaction, sequence: u64) -> [u8; 32] {
+    let mut hasher = blake2b_simd::Params::new()
+        .hash_length(32)
+        .key(TRANSACTION_ID_KEY)
+        .to_state();
 
-    // Input count + inputs
-    data.extend_from_slice(&(tx.inputs.len() as u64).to_le_bytes());
+    // version (u16 LE)
+    hasher.update(&tx.version.to_le_bytes());
+
+    // number of inputs (u64 LE)
+    hasher.update(&(tx.inputs.len() as u64).to_le_bytes());
     for input in &tx.inputs {
-        data.extend_from_slice(&input.previous_outpoint_hash);
-        data.extend_from_slice(&input.previous_outpoint_index.to_le_bytes());
-        data.extend_from_slice(&(input.signature_script.len() as u64).to_le_bytes());
-        data.extend_from_slice(&input.signature_script);
+        // previous outpoint: transaction_id (32 bytes) + index (u32 LE)
+        hasher.update(&input.previous_outpoint_hash);
+        hasher.update(&input.previous_outpoint_index.to_le_bytes());
+        // signature script EXCLUDED from the ID: write a zero-length var-bytes
+        // field (length u64 LE = 0, no bytes). sig_op_count is likewise not part
+        // of the ID's exclude-signature-script encoding.
+        hasher.update(&0u64.to_le_bytes());
+        // sequence (u64 LE)
+        hasher.update(&sequence.to_le_bytes());
     }
 
-    // Output count + outputs
-    data.extend_from_slice(&(tx.outputs.len() as u64).to_le_bytes());
+    // number of outputs (u64 LE)
+    hasher.update(&(tx.outputs.len() as u64).to_le_bytes());
     for output in &tx.outputs {
-        data.extend_from_slice(&output.amount.to_le_bytes());
-        data.extend_from_slice(&output.script_public_key.version.to_le_bytes());
-        data.extend_from_slice(&(output.script_public_key.script.len() as u64).to_le_bytes());
-        data.extend_from_slice(&output.script_public_key.script);
+        // value (u64 LE)
+        hasher.update(&output.amount.to_le_bytes());
+        // script_public_key: version (u16 LE) + script length (u64 LE) + script
+        hasher.update(&output.script_public_key.version.to_le_bytes());
+        hasher.update(&(output.script_public_key.script.len() as u64).to_le_bytes());
+        hasher.update(&output.script_public_key.script);
     }
 
-    // Lock time, subnetwork, gas, payload
-    data.extend_from_slice(&tx.lock_time.to_le_bytes());
-    data.extend_from_slice(&tx.subnetwork_id);
-    data.extend_from_slice(&tx.gas.to_le_bytes());
-    data.extend_from_slice(&(tx.payload.len() as u64).to_le_bytes());
-    data.extend_from_slice(&tx.payload);
+    // lock_time (u64 LE)
+    hasher.update(&tx.lock_time.to_le_bytes());
+    // subnetwork_id (20 bytes)
+    hasher.update(&tx.subnetwork_id);
+    // gas (u64 LE)
+    hasher.update(&tx.gas.to_le_bytes());
+    // payload as var-bytes: length (u64 LE) + payload. The mass-commitment field
+    // is EXCLUDED from the ID.
+    hasher.update(&(tx.payload.len() as u64).to_le_bytes());
+    hasher.update(&tx.payload);
 
-    sha256(&data)
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hasher.finalize().as_bytes());
+    out
 }
 
 // =============================================================================
@@ -998,8 +1061,13 @@ pub fn create_submit_tx_rpc_request(signed_tx_json: &str) -> Result<String, JsVa
                 index: inp.previous_outpoint_index,
             },
             signature_script: hex::encode(&inp.signature_script),
+            // Assumed constant: the WASM Transaction type has no per-input
+            // sequence/sig_op_count. Kept identical to the sighash builder
+            // (build_sighash_transaction) and the txid computation
+            // (compute_transaction_id / ASSUMED_INPUT_SEQUENCE) so signing,
+            // submission, and the txid all agree.
             sequence: u64::MAX,
-            sig_op_count: 1, // Standard for P2PK
+            sig_op_count: 1, // P2PK single-signature input
         }).collect(),
         outputs: tx.outputs.iter().map(|out| {
             // ScriptPublicKey is encoded as: version (2 bytes BE) + script
@@ -1097,5 +1165,107 @@ mod tests {
         assert!(is_valid_proof_format(&bytes));
         assert!(!is_valid_proof_format(&[0u8; 10]));
         assert!(!is_valid_proof_format(&[0u8; 50]));
+    }
+
+    // -------------------------------------------------------------------------
+    // Transaction ID known-answer tests.
+    //
+    // These vectors come directly from rusty-kaspa's own unit tests
+    // (`consensus/core/src/hashing/tx.rs`, `test_transaction_hashing`). They
+    // pin our version-0 txid encoding to Kaspa consensus byte-for-byte. If the
+    // field order, sizes, endianness, or the Blake2b domain key ever drift,
+    // these fail.
+    //
+    // The rusty-kaspa fixtures use `sequence = 7` per input, so they are
+    // exercised through `compute_transaction_id_with_sequence`; production code
+    // uses `compute_transaction_id`, which pins `sequence = u64::MAX` (the value
+    // KTCS actually submits).
+    // -------------------------------------------------------------------------
+
+    fn tx_output(value: u64, spk_version: u16, script: Vec<u8>) -> ktcs_core::kaspa_types::TransactionOutput {
+        ktcs_core::kaspa_types::TransactionOutput {
+            amount: value,
+            script_public_key: ScriptPublicKey { version: spk_version, script },
+        }
+    }
+
+    #[test]
+    fn test_transaction_id_kat_empty_native_tx() {
+        // rusty-kaspa test #1: empty version-0 native transaction.
+        let tx = Transaction {
+            version: 0,
+            inputs: vec![],
+            outputs: vec![],
+            lock_time: 0,
+            subnetwork_id: [0u8; 20],
+            gas: 0,
+            payload: vec![],
+        };
+        // No inputs => sequence is irrelevant; the public entry point must match.
+        let id = compute_transaction_id(&tx);
+        assert_eq!(
+            hex::encode(id),
+            "2c18d5e59ca8fc4c23d9560da3bf738a8f40935c11c162017fbf2c907b7e665c"
+        );
+    }
+
+    #[test]
+    fn test_transaction_id_kat_full_native_tx() {
+        // rusty-kaspa test #5: one input (outpoint index 2, sequence 7, a
+        // signature script that the ID excludes), one output (value 1564, spk
+        // version 7, script [1,2,3,4,5]), lock_time 54, native subnetwork,
+        // gas 3, empty payload.
+        let mut outpoint = [0u8; 32];
+        hex::decode_to_slice(
+            "59b3d6dc6cdc660c389c3fdb5704c48c598d279cdf1bab54182db586a4c95dd5",
+            &mut outpoint,
+        )
+        .unwrap();
+
+        let tx = Transaction {
+            version: 0,
+            inputs: vec![ktcs_core::kaspa_types::TransactionInput {
+                previous_outpoint_hash: outpoint,
+                previous_outpoint_index: 2,
+                // A non-empty signature script must NOT affect the ID.
+                signature_script: vec![0x01, 0x02],
+            }],
+            outputs: vec![tx_output(1564, 7, vec![1, 2, 3, 4, 5])],
+            lock_time: 54,
+            subnetwork_id: [0u8; 20],
+            gas: 3,
+            payload: vec![],
+        };
+
+        let id = compute_transaction_id_with_sequence(&tx, 7);
+        assert_eq!(
+            hex::encode(id),
+            "c9dd78e818445f617a28348d6db752142e2fab440effa58140ad2773e638b628"
+        );
+    }
+
+    #[test]
+    fn test_transaction_id_excludes_signature_script() {
+        // The ID must be independent of signature-script contents: signing an
+        // input (or changing its signature) must not change the transaction ID.
+        let mut base = Transaction {
+            version: 0,
+            inputs: vec![ktcs_core::kaspa_types::TransactionInput {
+                previous_outpoint_hash: [0x11; 32],
+                previous_outpoint_index: 0,
+                signature_script: vec![],
+            }],
+            outputs: vec![tx_output(1000, 0, vec![0x20; 34])],
+            lock_time: 0,
+            subnetwork_id: [0u8; 20],
+            gas: 0,
+            payload: vec![],
+        };
+        let id_unsigned = compute_transaction_id(&base);
+
+        base.inputs[0].signature_script = vec![0xde, 0xad, 0xbe, 0xef, 0x41, 0x42];
+        let id_signed = compute_transaction_id(&base);
+
+        assert_eq!(id_unsigned, id_signed, "signature script must not affect txid");
     }
 }

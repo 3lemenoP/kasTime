@@ -24,6 +24,10 @@ web-sys = { version = "0.3", features = ["console"] }
 
 # Crypto for WASM
 sha2 = "0.10"
+# Keyed Blake2b for the real Kaspa transaction ID (domain key "TransactionID").
+# Same crate/version ktcs-core uses for its sighash, so the construction matches
+# rusty-kaspa's `kaspa_hashes::TransactionID` exactly.
+blake2b_simd = "1.0"
 getrandom = { version = "0.2", features = ["js"] }
 
 # Optional panic hook for better error messages
