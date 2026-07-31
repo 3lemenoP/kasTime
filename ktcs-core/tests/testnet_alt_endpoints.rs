@@ -9,6 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 
 /// Test all known resolver domains for testnet-10
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_all_resolver_domains() {
     println!("\n=== Testing All Resolver Domains for Testnet-10 ===\n");
 
@@ -70,6 +71,7 @@ async fn test_all_resolver_domains() {
 
 /// Test with UID-based routing through PNN
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_uid_routing() {
     println!("\n=== Testing UID-based Routing ===\n");
 
@@ -121,6 +123,7 @@ async fn test_uid_routing() {
 
 /// Test explorer API for testnet-10
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_explorer_api() {
     println!("\n=== Testing Testnet-10 Explorer API ===\n");
 
@@ -164,6 +167,7 @@ async fn test_explorer_api() {
 
 /// Try to connect and send RPC to working endpoint
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_working_rpc() {
     println!("\n=== Testing RPC on Any Working Endpoint ===\n");
 

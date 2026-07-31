@@ -9,6 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 
 /// Test JSON-encoded mainnet endpoint with JSON-RPC
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_json_endpoint_mainnet() {
     println!("\n=== Testing JSON-encoded Mainnet Endpoint ===\n");
 
@@ -94,6 +95,7 @@ async fn test_json_endpoint_mainnet() {
 
 /// Test different RPC method formats
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_kaspa_rpc_methods() {
     println!("\n=== Testing Kaspa RPC Method Formats ===\n");
 
@@ -185,6 +187,7 @@ async fn test_kaspa_rpc_methods() {
 
 /// Test with Kaspa-style JSON request format (not JSON-RPC)
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_kaspa_native_format() {
     println!("\n=== Testing Kaspa Native JSON Format ===\n");
 

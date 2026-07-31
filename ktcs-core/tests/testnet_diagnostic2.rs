@@ -7,6 +7,7 @@ use tokio_tungstenite::connect_async;
 
 /// Try SID-based URL formats
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn diagnose_sid_based_endpoints() {
     println!("\n");
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -101,6 +102,7 @@ async fn diagnose_sid_based_endpoints() {
 
 /// Try the official Kaspa resolver SDK approach
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_kaspa_resolver_format() {
     println!("\n=== Testing Official Kaspa Resolver Format ===\n");
 
@@ -144,6 +146,7 @@ async fn test_kaspa_resolver_format() {
 
 /// Try direct Kaspa node ports (local or known public)
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_direct_ports() {
     println!("\n=== Testing Direct Port Connections ===\n");
 
@@ -188,6 +191,7 @@ async fn test_direct_ports() {
 
 /// Verify basic HTTPS connectivity to PNN
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_pnn_https() {
     println!("\n=== Testing PNN HTTPS Connectivity ===\n");
 

@@ -14,9 +14,11 @@
 #[cfg(feature = "kaspa-client")]
 use crate::kaspa::{BlockInfo, KaspaClient, Transaction, Utxo};
 #[cfg(feature = "kaspa-client")]
-use crate::tx::CommitmentTransaction;
+use crate::tx_builder::CommitmentTransaction;
 use crate::merkle::sha256;
-use crate::tx::{create_commitment, generate_nonce};
+// The hardened, WASM-compatible builder in `tx_builder` is now the single
+// transaction-building path (the old unsafe `tx` module was removed).
+use crate::tx_builder::{create_commitment, generate_nonce};
 use crate::wallet::KaspaWallet;
 #[cfg(feature = "kaspa-client")]
 use crate::wallet::{compute_kaspa_sighash, SigHashType, SighashInput, SighashOutput, SighashTransaction};
@@ -82,7 +84,8 @@ pub async fn prepare_direct_stamp(
     client: &KaspaClient,
     config: &DirectStampConfig,
 ) -> Result<PreparedStamp> {
-    use crate::tx::{select_utxos, TransactionBuilder};
+    use crate::kaspa_types::COMMITMENT_BURN_AMOUNT;
+    use crate::tx_builder::{select_utxos, TransactionBuilder};
 
     // 1. Create pending stamp (generates nonce and commitment)
     let mut prepared = create_pending_stamp(data)?;
@@ -99,13 +102,17 @@ pub async fn prepare_direct_stamp(
         ));
     }
 
-    // 3. Select UTXOs (need enough for fee; no additional output amount needed)
-    let (selected_utxos, _total) = select_utxos(&utxos, 0, config.fee_rate)?;
+    // 3. Select UTXOs covering the 0.2 KAS burn PLUS the estimated fee.
+    // `select_utxos` adds the estimated fee on top of `target_amount`, so the
+    // target is the burn amount itself (the old code passed 0 here and
+    // under-selected, failing wallets that had funds spread across UTXOs).
+    let (selected_utxos, _total) = select_utxos(&utxos, COMMITMENT_BURN_AMOUNT, config.fee_rate)?;
 
-    // 4. Build unsigned transaction
+    // 4. Build unsigned transaction using the hardened builder (checked
+    // arithmetic, dust-into-fee absorption, duplicate-UTXO detection).
     let tx_result = TransactionBuilder::new()
         .commitment(&prepared.commitment)
-        .add_inputs(selected_utxos.clone())
+        .add_inputs(selected_utxos.clone())?
         .change_address(wallet.address())
         .fee_per_gram(config.fee_rate)
         .build()?;
@@ -122,7 +129,10 @@ pub async fn prepare_direct_stamp(
 ///
 /// This creates the commitment and proof structure but doesn't build a transaction.
 /// Useful for previewing the commitment hash before connecting to the network.
-#[cfg(feature = "keygen")]
+///
+/// Note: this lives in the `kaspa-client`-gated `direct` module. Secure nonce
+/// generation requires the `keygen` feature; without it, `generate_nonce`
+/// returns an error at runtime rather than fabricating a weak nonce.
 pub fn prepare_direct_stamp_offline(
     data: &[u8],
     _wallet: &KaspaWallet,
@@ -157,8 +167,8 @@ pub struct PreparedStamp {
 /// Create a stamp directly from data (offline mode)
 ///
 /// This creates a pending proof that can be completed later when
-/// connected to the network.
-#[cfg(feature = "keygen")]
+/// connected to the network. Requires a secure nonce; with `kaspa-client` but
+/// not `keygen`, `generate_nonce` returns an error at runtime.
 pub fn create_pending_stamp(data: &[u8]) -> Result<PreparedStamp> {
     let nonce = generate_nonce()?;
     let data_hash = sha256(data);

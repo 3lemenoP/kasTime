@@ -90,6 +90,10 @@ pub fn deserialize_proof(data: &[u8]) -> Result<KtcsProof> {
     // Parse operations and attestations
     let mut operations = Vec::new();
     let mut attestations = Vec::new();
+    // Operations must all precede attestations. Once an attestation has been
+    // seen, a subsequent operation is malformed (the canonical layout is
+    // digest -> operations -> attestations).
+    let mut seen_attestation = false;
 
     while cursor < data.len() {
         let tag = data[cursor];
@@ -102,6 +106,7 @@ pub fn deserialize_proof(data: &[u8]) -> Result<KtcsProof> {
             let (attestation, new_cursor) = deserialize_attestation(data, cursor)?;
             attestations.push(attestation);
             cursor = new_cursor;
+            seen_attestation = true;
             // Security: Prevent DoS via excessive attestation count
             if attestations.len() > MAX_ATTESTATIONS {
                 return Err(KtcsError::InvalidData(
@@ -110,6 +115,12 @@ pub fn deserialize_proof(data: &[u8]) -> Result<KtcsProof> {
             }
         } else {
             // It's an operation
+            if seen_attestation {
+                return Err(KtcsError::InvalidData(
+                    "Operation found after an attestation (operations must precede attestations)"
+                        .to_string(),
+                ));
+            }
             let (operation, new_cursor) = deserialize_operation(data, cursor)?;
             operations.push(operation);
             cursor = new_cursor;
@@ -209,6 +220,13 @@ fn deserialize_operation(data: &[u8], cursor: usize) -> Result<(Operation, usize
         OpTag::Fork => {
             let (count, new_pos) = decode_varint(data, pos)?;
             pos = new_pos;
+            // Reject counts that would truncate on the u64 -> u32 narrowing.
+            if count > u32::MAX as u64 {
+                return Err(KtcsError::InvalidData(format!(
+                    "Fork count {} exceeds u32::MAX",
+                    count
+                )));
+            }
             Operation::Fork(count as u32)
         }
     };

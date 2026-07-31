@@ -22,6 +22,7 @@ use ktcs_core::kaspa::{KaspaClient, KaspaClientConfig};
 /// Test mainnet connection via resolver
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_connection() {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -53,6 +54,7 @@ async fn test_mainnet_connection() {
 /// Test DAG info retrieval and verify mainnet values
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_dag_info() {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -103,6 +105,7 @@ async fn test_mainnet_dag_info() {
 /// Test individual chain metrics
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_chain_metrics() {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -145,6 +148,7 @@ async fn test_mainnet_chain_metrics() {
 /// Test UTXO query with a known mainnet address
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_utxo_query() {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -188,6 +192,7 @@ async fn test_mainnet_utxo_query() {
 /// Test block query with a known hash
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_block_query() {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════");
@@ -238,6 +243,7 @@ async fn test_mainnet_block_query() {
 /// Run: cargo test --package ktcs-core --test mainnet_integration test_mainnet_wallet_generation --features "kaspa-client keygen" -- --nocapture
 #[cfg(all(feature = "kaspa-client", feature = "keygen"))]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_wallet_generation() {
     use ktcs_core::wallet::generate_wallet;
 
@@ -257,10 +263,11 @@ async fn test_mainnet_wallet_generation() {
     println!("  Address:     {}", wallet.address());
     println!();
 
-    // Save to file for later use
-    let key_file = "mainnet-test-wallet.key";
-    std::fs::write(key_file, &private_key_hex).expect("Failed to save wallet key");
-    println!("  ✓ Saved to: {}", key_file);
+    // Save to a file inside the OS temp dir (NOT the current working directory)
+    // so a plaintext mainnet private key is never dropped into the repo/CWD.
+    let key_file = std::env::temp_dir().join("mainnet-test-wallet.key");
+    std::fs::write(&key_file, private_key_hex.as_str()).expect("Failed to save wallet key");
+    println!("  ✓ Saved to: {}", key_file.display());
     println!();
 
     println!("  To use this wallet for transaction tests:");
@@ -469,6 +476,7 @@ async fn test_mainnet_stamp_transaction() {
 /// Run all read-only mainnet tests in sequence
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_comprehensive() {
     println!("\n");
     println!("╔═══════════════════════════════════════════════════════════╗");

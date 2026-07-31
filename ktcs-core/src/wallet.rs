@@ -98,38 +98,35 @@ const CHARSET_REV: [i8; 128] = [
 
 /// A Kaspa wallet for signing transactions.
 ///
-/// Private key is automatically zeroed when the wallet is dropped.
+/// The secret key is stored ONLY inside a [`Zeroizing`] container, so the real
+/// secret material is wiped when the wallet is dropped. We deliberately do NOT
+/// keep a long-lived `secp256k1::Keypair` (which does not implement `Zeroize`
+/// and would leave an un-wiped copy of the secret in memory); instead the
+/// keypair is reconstructed on demand for signing. Public data (address,
+/// network) is not "zeroized" — doing so was security theater.
+///
 /// Note: Clone is intentionally NOT derived to prevent accidental key duplication.
 pub struct KaspaWallet {
-    /// Keypair containing secret key - manually zeroized in Drop
-    keypair: Keypair,
+    /// Raw 32-byte secret key, zeroized on drop by `Zeroizing`.
+    secret: Zeroizing<[u8; 32]>,
     /// Public key (32 bytes - x-only Schnorr)
     public_key: XOnlyPublicKey,
-    /// Bech32m address - zeroized on drop
+    /// Bech32m address (public data)
     address: String,
-    /// Network prefix (kaspa or kaspatest) - zeroized on drop
+    /// Network prefix (kaspa or kaspatest) (public data)
     network: String,
 }
 
-impl Drop for KaspaWallet {
-    fn drop(&mut self) {
-        // Extract secret key bytes and zeroize them
-        // The Keypair doesn't implement Zeroize, so we manually clear the secret bytes
-        let mut secret_bytes = self.keypair.secret_key().secret_bytes();
-        secret_bytes.zeroize();
-
-        // Also zeroize the string fields
-        // SAFETY: We're modifying the string's bytes in place before drop
-        unsafe {
-            let address_bytes = self.address.as_bytes_mut();
-            address_bytes.zeroize();
-            let network_bytes = self.network.as_bytes_mut();
-            network_bytes.zeroize();
-        }
-    }
-}
-
 impl KaspaWallet {
+    /// Reconstruct a keypair from the stored secret for a signing operation.
+    ///
+    /// The returned keypair is short-lived; the persistent copy of the secret
+    /// remains the zeroize-on-drop `self.secret`.
+    fn keypair(&self, secp: &Secp256k1<secp256k1::All>) -> Result<Keypair> {
+        Keypair::from_seckey_slice(secp, self.secret.as_ref())
+            .map_err(|e| KtcsError::InvalidData(format!("Invalid secret key: {}", e)))
+    }
+
     /// Create a wallet from a private key.
     pub fn from_private_key(private_key: &[u8], network: &str) -> Result<Self> {
         if private_key.len() != 32 {
@@ -148,8 +145,13 @@ impl KaspaWallet {
 
         let address = encode_address(&public_key, network)?;
 
+        // Store the secret in a zeroize-on-drop buffer. `secret_bytes()` returns
+        // a copy; we hand it straight to `Zeroizing` so the only retained copy
+        // is wiped on drop.
+        let secret = Zeroizing::new(secret_key.secret_bytes());
+
         Ok(Self {
-            keypair,
+            secret,
             public_key,
             address,
             network: network.to_string(),
@@ -187,14 +189,14 @@ impl KaspaWallet {
     ///
     /// ⚠️ WARNING: Handle with care! Never log or expose this.
     pub fn private_key(&self) -> Zeroizing<[u8; 32]> {
-        Zeroizing::new(self.keypair.secret_key().secret_bytes())
+        Zeroizing::new(*self.secret)
     }
 
     /// Get the private key as a hex string (zeroized on drop).
     ///
     /// ⚠️ WARNING: Handle with care! Never log or expose this.
     pub fn to_hex(&self) -> Zeroizing<String> {
-        Zeroizing::new(hex::encode(*self.private_key()))
+        Zeroizing::new(hex::encode(self.secret.as_ref()))
     }
 
     /// Sign a transaction hash using Schnorr signature.
@@ -202,10 +204,11 @@ impl KaspaWallet {
     /// Returns a 64-byte Schnorr signature.
     pub fn sign(&self, message_hash: &[u8; 32]) -> Result<[u8; 64]> {
         let secp = Secp256k1::new();
+        let keypair = self.keypair(&secp)?;
 
         let message = Message::from_digest(*message_hash);
 
-        let signature = secp.sign_schnorr(&message, &self.keypair);
+        let signature = secp.sign_schnorr(&message, &keypair);
 
         Ok(*signature.as_ref())
     }
@@ -238,12 +241,19 @@ impl KaspaWallet {
 /// - 0x01 = ECDSA pubkey (type 'p')
 /// - 0x08 = script hash
 fn encode_address(public_key: &XOnlyPublicKey, network: &str) -> Result<String> {
+    // Only known Kaspa networks are accepted. An unknown string must NOT be
+    // used verbatim as the address prefix (that produced non-Kaspa addresses).
     let prefix = match network {
-        "mainnet" => "kaspa",
-        "testnet-10" | "testnet-11" | "testnet" => "kaspatest",
+        "mainnet" | "kaspa" => "kaspa",
+        "testnet-10" | "testnet-11" | "testnet" | "kaspatest" => "kaspatest",
         "simnet" | "kaspasim" => "kaspasim",
         "devnet" | "kaspadev" => "kaspadev",
-        _ => network,
+        _ => {
+            return Err(KtcsError::InvalidData(format!(
+                "Unknown network '{}': expected one of mainnet/testnet/simnet/devnet",
+                network
+            )))
+        }
     };
 
     // Kaspa address format: version byte (0x00 for schnorr) + 32-byte x-only pubkey
@@ -273,7 +283,20 @@ fn encode_address(public_key: &XOnlyPublicKey, network: &str) -> Result<String> 
 }
 
 /// Decode a Kaspa address to extract the prefix and public key.
+///
+/// Rejects mixed-case input (bech32 forbids mixing upper and lower case) and
+/// requires the prefix to be a known Kaspa network prefix.
 pub fn decode_address(address: &str) -> Result<(String, Vec<u8>)> {
+    // Reject mixed-case per bech32. Kaspa addresses are canonically lowercase;
+    // an all-uppercase address is still permitted and normalized below.
+    let has_upper = address.chars().any(|c| c.is_ascii_uppercase());
+    let has_lower = address.chars().any(|c| c.is_ascii_lowercase());
+    if has_upper && has_lower {
+        return Err(KtcsError::InvalidData(
+            "Invalid address: mixed-case is not allowed".to_string(),
+        ));
+    }
+
     // Split on colon separator
     let parts: Vec<&str> = address.split(':').collect();
     if parts.len() != 2 {
@@ -282,8 +305,20 @@ pub fn decode_address(address: &str) -> Result<(String, Vec<u8>)> {
         ));
     }
 
+    // Safe now that mixed-case is rejected (this only lowercases all-upper input).
     let prefix = parts[0].to_lowercase();
     let data_part = parts[1].to_lowercase();
+
+    // Validate the prefix is a known Kaspa network prefix.
+    match prefix.as_str() {
+        "kaspa" | "kaspatest" | "kaspasim" | "kaspadev" => {}
+        _ => {
+            return Err(KtcsError::InvalidData(format!(
+                "Unknown address prefix '{}'",
+                prefix
+            )))
+        }
+    }
 
     if data_part.len() < 8 {
         return Err(KtcsError::InvalidData("Address data too short".to_string()));
@@ -569,6 +604,18 @@ pub fn compute_kaspa_sighash(
         )));
     }
 
+    // This implementation only supports SIGHASH_ALL. The other sighash types
+    // (NONE/SINGLE and the ANYONECANPAY modifier) require hashing a different
+    // subset of inputs/outputs; producing a SIGHASH_ALL digest while claiming a
+    // different type would yield a silently-wrong signature. Reject explicitly
+    // rather than mislead the caller.
+    if sighash_type != SigHashType::All {
+        return Err(KtcsError::InvalidData(format!(
+            "Unsupported sighash type {:?}: only SIGHASH_ALL (0x01) is implemented",
+            sighash_type
+        )));
+    }
+
     let input = &tx.inputs[input_index];
 
     // Compute intermediate hashes based on sighash type
@@ -779,5 +826,114 @@ mod tests {
         let mut sensitive = [0x42u8; 32];
         zeroize_bytes(&mut sensitive);
         assert_eq!(sensitive, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_wallet_secret_stored_and_signs() {
+        // The secret is stored in a Zeroizing buffer and the keypair is
+        // reconstructed for signing; verify signing + round-trip still work.
+        let private_key = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        let wallet = KaspaWallet::from_private_key(&private_key, "testnet").unwrap();
+
+        // private_key() reflects the stored secret.
+        assert_eq!(*wallet.private_key(), private_key);
+        assert_eq!(
+            wallet.to_hex().as_str(),
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+        );
+
+        // Signing (which reconstructs the keypair) still verifies.
+        let msg = [0x33u8; 32];
+        let sig = wallet.sign(&msg).unwrap();
+        assert!(KaspaWallet::verify(wallet.x_only_public_key(), &msg, &sig).unwrap());
+    }
+
+    #[test]
+    fn test_encode_address_rejects_unknown_network() {
+        let private_key = [0x11u8; 32];
+        // Unknown network string must be rejected, not used verbatim as prefix.
+        // (KaspaWallet deliberately has no Debug, so avoid unwrap_err.)
+        match KaspaWallet::from_private_key(&private_key, "bogusnet") {
+            Err(e) => assert!(e.to_string().contains("Unknown network"), "got: {}", e),
+            Ok(_) => panic!("unknown network should be rejected"),
+        }
+
+        // Known aliases still work.
+        assert!(KaspaWallet::from_private_key(&private_key, "kaspa").is_ok());
+        assert!(KaspaWallet::from_private_key(&private_key, "testnet-10").is_ok());
+    }
+
+    #[test]
+    fn test_decode_address_rejects_mixed_case_and_unknown_prefix() {
+        let wallet = KaspaWallet::from_private_key(&[0x22u8; 32], "mainnet").unwrap();
+        let address = wallet.address().to_string();
+
+        // Baseline: canonical lowercase address decodes.
+        assert!(decode_address(&address).is_ok());
+
+        // Mixed-case must be rejected.
+        let mixed = {
+            let mut chars: Vec<char> = address.chars().collect();
+            // Uppercase the last data char to introduce mixed case.
+            if let Some(last) = chars.last_mut() {
+                *last = last.to_ascii_uppercase();
+            }
+            chars.into_iter().collect::<String>()
+        };
+        // Only meaningful if uppercasing actually changed a letter.
+        if mixed != address {
+            let res = decode_address(&mixed);
+            assert!(res.is_err(), "mixed-case address should be rejected");
+        }
+
+        // Unknown prefix must be rejected.
+        let data = address.split(':').nth(1).unwrap();
+        let bad_prefix = format!("bitcoin:{}", data);
+        assert!(decode_address(&bad_prefix).is_err());
+    }
+
+    #[test]
+    fn test_compute_kaspa_sighash_rejects_non_all() {
+        let tx = SighashTransaction {
+            version: 0,
+            inputs: vec![SighashInput {
+                previous_outpoint_hash: [0x01; 32],
+                previous_outpoint_index: 0,
+                script_public_key_version: 0,
+                script_public_key: vec![0x20; 34],
+                value: 1000,
+                sequence: u64::MAX,
+                sig_op_count: 1,
+            }],
+            outputs: vec![SighashOutput {
+                value: 900,
+                script_public_key_version: 0,
+                script_public_key: vec![0x20; 34],
+            }],
+            lock_time: 0,
+            subnetwork_id: [0u8; 20],
+            gas: 0,
+            payload: vec![],
+        };
+
+        // SIGHASH_ALL is supported.
+        assert!(compute_kaspa_sighash(&tx, 0, SigHashType::All).is_ok());
+
+        // All other types must return an explicit error, not a wrong hash.
+        for ty in [
+            SigHashType::None,
+            SigHashType::Single,
+            SigHashType::AnyOneCanPay,
+            SigHashType::AllAnyOneCanPay,
+            SigHashType::NoneAnyOneCanPay,
+            SigHashType::SingleAnyOneCanPay,
+        ] {
+            let res = compute_kaspa_sighash(&tx, 0, ty);
+            assert!(res.is_err(), "sighash type {:?} should be rejected", ty);
+        }
     }
 }

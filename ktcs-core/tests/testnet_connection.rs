@@ -18,6 +18,7 @@ use ktcs_core::{
 /// Test that the resolver can find testnet-10 endpoints
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_resolver_testnet10_url() {
     println!("\n=== Test: Resolver testnet-10 URL ===\n");
 
@@ -40,6 +41,7 @@ async fn test_resolver_testnet10_url() {
 /// Test that the resolver can find testnet-11 endpoints
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_resolver_testnet11_url() {
     println!("\n=== Test: Resolver testnet-11 URL ===\n");
 
@@ -61,6 +63,7 @@ async fn test_resolver_testnet11_url() {
 /// Test the convenience function resolve_url
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_resolve_url_function() {
     println!("\n=== Test: resolve_url convenience function ===\n");
 
@@ -80,6 +83,7 @@ async fn test_resolve_url_function() {
 /// Test client creation with testnet10 public config
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_client_config_testnet10() {
     println!("\n=== Test: Client config for testnet-10 ===\n");
 
@@ -99,6 +103,7 @@ async fn test_client_config_testnet10() {
 /// Test connecting to testnet-10 via resolver
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_connect_testnet10_via_resolver() {
     println!("\n=== Test: Connect to testnet-10 via resolver ===\n");
 
@@ -156,6 +161,7 @@ async fn test_connect_testnet10_via_resolver() {
 /// Test connecting to testnet-11 via resolver
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_connect_testnet11_via_resolver() {
     println!("\n=== Test: Connect to testnet-11 via resolver ===\n");
 
@@ -166,6 +172,7 @@ async fn test_connect_testnet11_via_resolver() {
         request_timeout_ms: 30000,
         auto_reconnect: false,
         use_resolver: true,
+        tls_verify: true,
     };
     let client = KaspaClient::new(config);
 
@@ -201,6 +208,7 @@ async fn test_connect_testnet11_via_resolver() {
 /// Test DAA score retrieval
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_get_daa_score() {
     println!("\n=== Test: Get DAA score ===\n");
 
@@ -229,6 +237,7 @@ async fn test_get_daa_score() {
 /// Test blue score retrieval
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_get_blue_score() {
     println!("\n=== Test: Get blue score ===\n");
 
@@ -257,6 +266,7 @@ async fn test_get_blue_score() {
 /// Test fetching UTXOs for a test address
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_get_utxos() {
     println!("\n=== Test: Get UTXOs for address ===\n");
 
@@ -291,6 +301,7 @@ async fn test_get_utxos() {
 /// Test multiple concurrent connections
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_concurrent_connections() {
     println!("\n=== Test: Concurrent connections ===\n");
 
@@ -338,6 +349,7 @@ async fn test_concurrent_connections() {
 /// Test connection state transitions
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_connection_states() {
     println!("\n=== Test: Connection state transitions ===\n");
 
@@ -369,6 +381,7 @@ async fn test_connection_states() {
 /// Test is_connected helper
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_is_connected() {
     println!("\n=== Test: is_connected helper ===\n");
 
@@ -391,6 +404,7 @@ async fn test_is_connected() {
 /// Comprehensive test that exercises the full connection flow
 #[cfg(feature = "kaspa-client")]
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_full_testnet_flow() {
     println!("\n");
     println!("╔═══════════════════════════════════════════════════════════╗");
@@ -438,6 +452,7 @@ async fn test_full_testnet_flow() {
         request_timeout_ms: 30000,
         auto_reconnect: false,
         use_resolver: false, // Already resolved
+        tls_verify: true,
     };
     let client = KaspaClient::new(config);
 
@@ -457,6 +472,7 @@ async fn test_full_testnet_flow() {
                         request_timeout_ms: 30000,
                         auto_reconnect: false,
                         use_resolver: false,
+                        tls_verify: true,
                     };
                     let client = KaspaClient::new(config);
                     if client.connect().await.is_ok() {

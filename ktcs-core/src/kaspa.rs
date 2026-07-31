@@ -131,6 +131,69 @@ struct RpcError {
     message: String,
 }
 
+/// Decode a hex string into an exact 32-byte hash.
+///
+/// Returns an error (rather than silently substituting all-zeros) if the hex is
+/// invalid or does not decode to exactly 32 bytes.
+fn decode_hash32(s: &str, what: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode(s)
+        .map_err(|e| KtcsError::InvalidData(format!("Invalid {} hex: {}", what, e)))?;
+    if bytes.len() != 32 {
+        return Err(KtcsError::InvalidData(format!(
+            "Invalid {} length: expected 32 bytes, got {}",
+            what,
+            bytes.len()
+        )));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+/// Decode a Kaspa `blueWork` hex string into a 32-byte big-endian buffer.
+///
+/// Kaspa RPC returns `blueWork` as UNPADDED big-endian hex, which is frequently
+/// odd-length (e.g. "f1a2b" ). Naive `hex::decode` fails on odd-length input; the
+/// old code then silently substituted all-zeros, gutting the blue-work security
+/// metric. Here we left-pad odd-length hex to even, decode, and right-align into
+/// the 32-byte buffer. Invalid hex or a value wider than 32 bytes is an error,
+/// never a silent zero.
+fn decode_blue_work_hex(s: &str) -> Result<[u8; 32]> {
+    let owned;
+    let even: &str = if s.len() % 2 == 1 {
+        owned = format!("0{}", s);
+        &owned
+    } else {
+        s
+    };
+
+    let bytes = hex::decode(even)
+        .map_err(|e| KtcsError::InvalidData(format!("Invalid blueWork hex '{}': {}", s, e)))?;
+    if bytes.len() > 32 {
+        return Err(KtcsError::InvalidData(format!(
+            "blueWork too large: {} bytes (max 32)",
+            bytes.len()
+        )));
+    }
+    let mut out = [0u8; 32];
+    out[32 - bytes.len()..].copy_from_slice(&bytes);
+    Ok(out)
+}
+
+/// Heuristic: does `s` look like a bare pay-to-pubkey scriptPublicKey with NO
+/// leading 2-byte version prefix, i.e. `<push N> <N bytes> OP_CHECKSIG`?
+///
+/// Used to avoid unconditionally stripping 2 "version" bytes off a returned
+/// UTXO script (which would corrupt an unprefixed script).
+fn is_bare_pubkey_script(s: &[u8]) -> bool {
+    if s.len() < 2 {
+        return false;
+    }
+    let push = s[0] as usize;
+    // A canonical single-key script: data-push of `push` bytes then OP_CHECKSIG.
+    (1..=75).contains(&push) && s.len() == push + 2 && s[s.len() - 1] == 0xac
+}
+
 /// Kaspa RPC client for blockchain interaction
 ///
 /// This client provides methods for:
@@ -147,6 +210,10 @@ pub struct KaspaClient {
     ws_sender: Arc<RwLock<Option<mpsc::Sender<String>>>>,
     #[cfg(feature = "kaspa-client")]
     pending_requests: Arc<RwLock<HashMap<u64, oneshot::Sender<String>>>>,
+    /// Handles for the spawned socket read/write tasks, so `disconnect()` can
+    /// actually abort them instead of leaking them.
+    #[cfg(feature = "kaspa-client")]
+    tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
     #[allow(dead_code)]
     event_sender: Option<mpsc::Sender<BlockEvent>>,
 }
@@ -163,6 +230,8 @@ impl KaspaClient {
             ws_sender: Arc::new(RwLock::new(None)),
             #[cfg(feature = "kaspa-client")]
             pending_requests: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(feature = "kaspa-client")]
+            tasks: Arc::new(RwLock::new(Vec::new())),
             event_sender: None,
         }
     }
@@ -235,7 +304,7 @@ impl KaspaClient {
         let state_clone = self.state.clone();
 
         // Spawn write task
-        tokio::spawn(async move {
+        let write_handle = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 if ws_write.send(Message::Text(msg)).await.is_err() {
                     break;
@@ -244,11 +313,14 @@ impl KaspaClient {
         });
 
         // Spawn read task
-        tokio::spawn(async move {
+        let read_handle = tokio::spawn(async move {
             while let Some(msg) = ws_read.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        // Try to parse as JSON-RPC response
+                        // Route JSON-RPC responses by id. Notifications (no
+                        // matching pending id) are not delivered — see the
+                        // subscribe_* methods, which report subscriptions as
+                        // unsupported rather than silently dropping events.
                         if let Ok(response) = serde_json::from_str::<RpcResponse<serde_json::Value>>(&text) {
                             let mut pending = pending_requests.write().await;
                             if let Some(sender) = pending.remove(&response.id) {
@@ -270,6 +342,17 @@ impl KaspaClient {
                 }
             }
         });
+
+        // Store task handles so disconnect() can abort them (abort any stale
+        // tasks from a previous connection first).
+        {
+            let mut tasks = self.tasks.write().await;
+            for t in tasks.drain(..) {
+                t.abort();
+            }
+            tasks.push(write_handle);
+            tasks.push(read_handle);
+        }
 
         {
             let mut state = state.write().await;
@@ -294,10 +377,14 @@ impl KaspaClient {
         method: &str,
         params: P,
     ) -> Result<R> {
-        let sender = self.ws_sender.read().await;
-        let sender = sender.as_ref().ok_or_else(|| {
-            KtcsError::ConnectionError("Not connected to Kaspa node".to_string())
-        })?;
+        // Clone the sender out of the guard so we don't hold the RwLock across
+        // the await, and can update connection state on error.
+        let sender = {
+            let guard = self.ws_sender.read().await;
+            guard.as_ref().cloned().ok_or_else(|| {
+                KtcsError::ConnectionError("Not connected to Kaspa node".to_string())
+            })?
+        };
 
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
         let request = RpcRequest {
@@ -310,11 +397,8 @@ impl KaspaClient {
         let request_json = serde_json::to_string(&request)
             .map_err(|e| KtcsError::InvalidData(format!("Failed to serialize request: {}", e)))?;
 
-        // Debug: print full request for submitTransaction
-        #[cfg(debug_assertions)]
-        if method.contains("SubmitTransaction") {
-            eprintln!("Full RPC request:\n{}", serde_json::to_string_pretty(&request).unwrap_or_default());
-        }
+        // Trace-level only: full request bodies (never on stderr by default).
+        tracing::trace!(method = %method, request = %request_json, "sending RPC request");
 
         // Create response channel
         let (tx, rx) = oneshot::channel();
@@ -323,17 +407,29 @@ impl KaspaClient {
             pending.insert(id, tx);
         }
 
-        // Send request
-        sender.send(request_json).await.map_err(|_| {
-            KtcsError::ConnectionError("Failed to send request".to_string())
-        })?;
+        // Send request. A send error means the socket/write task is gone: mark
+        // the connection disconnected so `is_connected()` reflects reality.
+        if sender.send(request_json).await.is_err() {
+            self.pending_requests.write().await.remove(&id);
+            *self.state.write().await = ConnectionState::Disconnected;
+            return Err(KtcsError::ConnectionError("Failed to send request".to_string()));
+        }
 
         // Wait for response with timeout
         let timeout = tokio::time::Duration::from_millis(self.config.request_timeout_ms);
-        let response_text = tokio::time::timeout(timeout, rx)
-            .await
-            .map_err(|_| KtcsError::ConnectionError("Request timeout".to_string()))?
-            .map_err(|_| KtcsError::ConnectionError("Request cancelled".to_string()))?;
+        let response_text = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(text)) => text,
+            Ok(Err(_)) => {
+                // The oneshot sender was dropped: the read task died -> disconnected.
+                self.pending_requests.write().await.remove(&id);
+                *self.state.write().await = ConnectionState::Disconnected;
+                return Err(KtcsError::ConnectionError("Request cancelled".to_string()));
+            }
+            Err(_) => {
+                self.pending_requests.write().await.remove(&id);
+                return Err(KtcsError::ConnectionError("Request timeout".to_string()));
+            }
+        };
 
         // Parse response
         let response: RpcResponse<R> = serde_json::from_str(&response_text)
@@ -352,8 +448,27 @@ impl KaspaClient {
         })
     }
 
-    /// Disconnect from the Kaspa node
+    /// Disconnect from the Kaspa node.
+    ///
+    /// This actually tears the connection down: it drops the send channel (so
+    /// the write task's receiver closes and the socket is flushed/closed),
+    /// aborts the spawned read/write tasks so no socket tasks leak, and cancels
+    /// any in-flight request waiters.
     pub async fn disconnect(&self) -> Result<()> {
+        // Drop the sender: the write task's `rx.recv()` returns None and it exits.
+        *self.ws_sender.write().await = None;
+
+        // Abort the read/write tasks so they don't linger.
+        {
+            let mut tasks = self.tasks.write().await;
+            for t in tasks.drain(..) {
+                t.abort();
+            }
+        }
+
+        // Cancel any pending request waiters (their oneshot senders drop).
+        self.pending_requests.write().await.clear();
+
         let mut state = self.state.write().await;
         *state = ConnectionState::Disconnected;
         Ok(())
@@ -429,19 +544,11 @@ impl KaspaClient {
         let block = response.block;
         let header = block.header;
 
-        // Parse block hash
-        let block_hash_bytes = hex::decode(&header.hash)
-            .map_err(|e| KtcsError::InvalidData(format!("Invalid block hash: {}", e)))?;
-        let mut block_hash = [0u8; 32];
-        if block_hash_bytes.len() == 32 {
-            block_hash.copy_from_slice(&block_hash_bytes);
-        }
+        // Parse block hash (strict: wrong length / bad hex is an error).
+        let block_hash = decode_hash32(&header.hash, "block hash")?;
 
-        // Parse blue work
-        let blue_work_bytes = hex::decode(&header.blue_work).unwrap_or_else(|_| vec![0u8; 32]);
-        let mut blue_work = [0u8; 32];
-        let start = 32usize.saturating_sub(blue_work_bytes.len());
-        blue_work[start..].copy_from_slice(&blue_work_bytes[..32.min(blue_work_bytes.len())]);
+        // Parse blue work (handles unpadded/odd-length hex; never silently zero).
+        let blue_work = decode_blue_work_hex(&header.blue_work)?;
 
         // Parse parent hashes (first level only)
         // Format is Vec<Vec<String>> where each inner vec is a level
@@ -612,19 +719,11 @@ impl KaspaClient {
         let block = response.block;
         let header = block.header;
 
-        // Parse block hash
-        let block_hash_bytes = hex::decode(&header.hash)
-            .map_err(|e| KtcsError::InvalidData(format!("Invalid block hash: {}", e)))?;
-        let mut block_hash = [0u8; 32];
-        if block_hash_bytes.len() == 32 {
-            block_hash.copy_from_slice(&block_hash_bytes);
-        }
+        // Parse block hash (strict: wrong length / bad hex is an error).
+        let block_hash = decode_hash32(&header.hash, "block hash")?;
 
-        // Parse blue work
-        let blue_work_bytes = hex::decode(&header.blue_work).unwrap_or_else(|_| vec![0u8; 32]);
-        let mut blue_work = [0u8; 32];
-        let start = 32usize.saturating_sub(blue_work_bytes.len());
-        blue_work[start..].copy_from_slice(&blue_work_bytes[..32.min(blue_work_bytes.len())]);
+        // Parse blue work (handles unpadded/odd-length hex; never silently zero).
+        let blue_work = decode_blue_work_hex(&header.blue_work)?;
 
         // Parse parent hashes
         let parent_hashes: Vec<[u8; 32]> = header
@@ -796,13 +895,8 @@ impl KaspaClient {
             })
             .collect();
 
-        // Parse pruning point hash
-        let pruning_point_bytes = hex::decode(&response.pruning_point_hash)
-            .map_err(|e| KtcsError::InvalidData(format!("Invalid pruning point hash: {}", e)))?;
-        let mut pruning_point_hash = [0u8; 32];
-        if pruning_point_bytes.len() == 32 {
-            pruning_point_hash.copy_from_slice(&pruning_point_bytes);
-        }
+        // Parse pruning point hash (strict).
+        let pruning_point_hash = decode_hash32(&response.pruning_point_hash, "pruning point hash")?;
 
         Ok(DagInfo {
             network: response.network,
@@ -1133,9 +1227,11 @@ impl KaspaClient {
             "allowOrphan": false
         });
 
-        // Debug: print the request JSON
-        #[cfg(debug_assertions)]
-        eprintln!("submitTransaction params:\n{}", serde_json::to_string_pretty(&params).unwrap_or_default());
+        // Trace-level only: never dump full transaction requests to stderr.
+        tracing::trace!(
+            params = %serde_json::to_string(&params).unwrap_or_default(),
+            "submitTransaction request"
+        );
 
         let response: SubmitResponse = self.send_request("submitTransaction", params).await?;
 
@@ -1217,13 +1313,24 @@ impl KaspaClient {
 
                 let script_bytes = hex::decode(&entry.utxo_entry.script_public_key).ok()?;
 
-                // Extract version from script (first 2 bytes if present, otherwise 0)
-                let (version, script) = if script_bytes.len() >= 2 {
-                    // Kaspa script format: 2-byte version prefix + script data
-                    let ver = u16::from_le_bytes([script_bytes[0], script_bytes[1]]);
+                // Only strip a 2-byte version prefix when the script actually
+                // carries one; never corrupt an unprefixed script.
+                //
+                // Assumption: a version-prefixed scriptPublicKey is encoded as
+                // `version(2 bytes, BIG-ENDIAN) || script`, matching how
+                // `submit_transaction` encodes outputs. We decode BE here (the
+                // old code decoded LE, inconsistent with submit — "correct" only
+                // because version is currently 0). We detect the prefix by
+                // checking whether the bytes are already a bare pubkey script
+                // (no prefix) or become one after dropping 2 bytes.
+                let (version, script) = if is_bare_pubkey_script(&script_bytes) {
+                    (0u16, script_bytes)
+                } else if script_bytes.len() >= 2 && is_bare_pubkey_script(&script_bytes[2..]) {
+                    let ver = u16::from_be_bytes([script_bytes[0], script_bytes[1]]);
                     (ver, script_bytes[2..].to_vec())
                 } else {
-                    (0, script_bytes)
+                    // Unrecognized shape: leave it intact rather than corrupt it.
+                    (0u16, script_bytes)
                 };
 
                 Some(Utxo {
@@ -1276,26 +1383,17 @@ impl KaspaClient {
         &self,
         _sender: mpsc::Sender<BlockEvent>,
     ) -> Result<()> {
-        let state = self.state.read().await;
-        if !matches!(*state, ConnectionState::Connected) {
-            return Err(KtcsError::ConnectionError(
-                "Not connected to Kaspa node".to_string(),
-            ));
-        }
-        drop(state);
-
-        // Send subscription request
-        let params = serde_json::json!({});
-        let _response: serde_json::Value = self
-            .send_request("notifyBlockAdded", params)
-            .await?;
-
-        // Note: To fully implement notifications, we would need to:
-        // 1. Store the sender in a subscription registry
-        // 2. Modify the WebSocket receive loop to route notifications
-        // 3. Parse notification messages and send to subscribers
-        tracing::info!("Subscribed to block added notifications");
-        Ok(())
+        // Honest failure: the WebSocket read loop routes JSON-RPC responses by
+        // id and does NOT route notifications, so subscribing here would send
+        // events into a channel that never receives anything. Rather than
+        // silently succeed and drop every notification, report it as
+        // unsupported. Confirmation tracking uses `wait_for_confirmation`
+        // (polling) instead.
+        Err(KtcsError::ConnectionError(
+            "Block notifications are not supported by this client; use polling \
+             (wait_for_confirmation) instead"
+                .to_string(),
+        ))
     }
 
     #[cfg(not(feature = "kaspa-client"))]
@@ -1324,24 +1422,13 @@ impl KaspaClient {
         &self,
         _sender: mpsc::Sender<BlockEvent>,
     ) -> Result<()> {
-        let state = self.state.read().await;
-        if !matches!(*state, ConnectionState::Connected) {
-            return Err(KtcsError::ConnectionError(
-                "Not connected to Kaspa node".to_string(),
-            ));
-        }
-        drop(state);
-
-        // Send subscription request
-        let params = serde_json::json!({
-            "includeAcceptedTransactionIds": true
-        });
-        let _response: serde_json::Value = self
-            .send_request("notifyVirtualSelectedParentChainChanged", params)
-            .await?;
-
-        tracing::info!("Subscribed to virtual chain changed notifications");
-        Ok(())
+        // Not supported for the same reason as `subscribe_to_block_added`:
+        // notifications are not routed by the read loop.
+        Err(KtcsError::ConnectionError(
+            "Virtual-chain notifications are not supported by this client; use \
+             polling (wait_for_confirmation) instead"
+                .to_string(),
+        ))
     }
 
     #[cfg(not(feature = "kaspa-client"))]
@@ -1354,26 +1441,14 @@ impl KaspaClient {
         ))
     }
 
-    /// Unsubscribe from all notifications
+    /// Unsubscribe from all notifications.
     ///
-    /// Sends unsubscribe requests to the Kaspa node for all active subscriptions.
+    /// Because this client does not support subscriptions (see the `subscribe_*`
+    /// methods), there is nothing to unsubscribe. The previous implementation
+    /// wrongly RE-SENT the `notify*` *subscribe* methods here (which would
+    /// subscribe, not unsubscribe); this is now a correct no-op.
     #[cfg(feature = "kaspa-client")]
     pub async fn unsubscribe_all(&self) -> Result<()> {
-        let state = self.state.read().await;
-        if !matches!(*state, ConnectionState::Connected) {
-            return Ok(()); // Nothing to unsubscribe if not connected
-        }
-        drop(state);
-
-        // Unsubscribe from block added
-        let params = serde_json::json!({});
-        let _ = self.send_request::<_, serde_json::Value>("notifyBlockAdded", params).await;
-
-        // Unsubscribe from virtual chain changes
-        let params = serde_json::json!({});
-        let _ = self.send_request::<_, serde_json::Value>("notifyVirtualSelectedParentChainChanged", params).await;
-
-        tracing::info!("Unsubscribed from all notifications");
         Ok(())
     }
 
@@ -1402,18 +1477,33 @@ impl KaspaClient {
         tx_hash: &[u8; 32],
         timeout_ms: u64,
     ) -> Result<BlockInfo> {
-        use std::time::{Duration, Instant};
         use std::collections::HashSet;
+        use std::time::{Duration, Instant};
+
+        // How deep to walk parent generations from the current tips each poll.
+        // The old code only checked tips + one parent level, so a tx that sank
+        // below that horizon between 100ms polls was missed → spurious timeout.
+        const MAX_GENERATIONS: usize = 20;
+        // Bound the block fetches performed in a single poll.
+        const MAX_BLOCKS_PER_POLL: usize = 256;
+        // Cap the cross-poll "already clean" cache so memory stays bounded on a
+        // long wait; when exceeded we clear it (re-fetching is bounded per poll).
+        const MAX_CHECKED_BLOCKS: usize = 10_000;
 
         let start = Instant::now();
         let timeout = Duration::from_millis(timeout_ms);
-        let poll_interval = Duration::from_millis(100); // Poll every 100ms
+        let poll_interval = Duration::from_millis(100);
 
-        // Track blocks we've already checked to avoid re-checking
+        // Blocks already fetched and known NOT to contain the tx. Used to skip
+        // re-fetching old subtrees; newly-added blocks are never in this set, so
+        // a recently-accepted tx reachable from fresh tips is still walked to.
         let mut checked_blocks: HashSet<[u8; 32]> = HashSet::new();
 
-        tracing::info!("Waiting for transaction {} confirmation (timeout: {}ms)",
-            hex::encode(tx_hash), timeout_ms);
+        tracing::info!(
+            "Waiting for transaction {} confirmation (timeout: {}ms)",
+            hex::encode(tx_hash),
+            timeout_ms
+        );
 
         loop {
             if start.elapsed() > timeout {
@@ -1421,7 +1511,6 @@ impl KaspaClient {
                 return Err(KtcsError::Other("Transaction confirmation timeout".to_string()));
             }
 
-            // Get current DAG state
             let dag_info = match self.get_block_dag_info().await {
                 Ok(info) => info,
                 Err(e) => {
@@ -1431,74 +1520,83 @@ impl KaspaClient {
                 }
             };
 
-            // Check each tip block for our transaction
-            for tip_hash in &dag_info.tip_hashes {
-                // Skip if we've already checked this block
-                if checked_blocks.contains(tip_hash) {
-                    continue;
-                }
+            // Breadth-first walk from the current tips down through parent
+            // generations, bounded by MAX_GENERATIONS and MAX_BLOCKS_PER_POLL.
+            let mut current_gen: Vec<[u8; 32]> = dag_info.tip_hashes.clone();
+            let mut visited_this_poll: HashSet<[u8; 32]> = HashSet::new();
+            let mut blocks_this_poll = 0usize;
+            let mut generation = 0usize;
 
-                // Fetch the block with transaction IDs
-                match self.get_block_by_hash(tip_hash).await {
-                    Ok(block) => {
-                        checked_blocks.insert(*tip_hash);
+            while !current_gen.is_empty()
+                && generation < MAX_GENERATIONS
+                && blocks_this_poll < MAX_BLOCKS_PER_POLL
+            {
+                let mut next_gen: Vec<[u8; 32]> = Vec::new();
 
-                        // Check if our transaction is in this block
-                        if block.transaction_ids.iter().any(|id| id == tx_hash) {
-                            // Security: Basic sanity check - block timestamp should be reasonable
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis() as u64;
+                for hash in current_gen {
+                    if blocks_this_poll >= MAX_BLOCKS_PER_POLL {
+                        break;
+                    }
+                    // Skip diamonds within this poll and old known-clean subtrees.
+                    if !visited_this_poll.insert(hash) || checked_blocks.contains(&hash) {
+                        continue;
+                    }
 
-                            // Block timestamp should not be more than 1 hour in the future
-                            if block.timestamp > now_ms + 3_600_000 {
-                                tracing::warn!(
-                                    "Block {} has timestamp far in future ({} vs now {}), skipping",
-                                    hex::encode(block.hash),
-                                    block.timestamp,
-                                    now_ms
-                                );
-                                continue;
-                            }
+                    match self.get_block_by_hash(&hash).await {
+                        Ok(block) => {
+                            blocks_this_poll += 1;
 
-                            tracing::info!(
-                                "Transaction {} confirmed in block {} at DAA score {}",
-                                hex::encode(tx_hash),
-                                hex::encode(block.hash),
-                                block.daa_score
-                            );
-                            return Ok(block);
-                        }
-
-                        // Also check parent blocks (transaction might be in a recent parent)
-                        for parent_hash in &block.parent_hashes {
-                            if checked_blocks.contains(parent_hash) {
-                                continue;
-                            }
-
-                            if let Ok(parent_block) = self.get_block_by_hash(parent_hash).await {
-                                checked_blocks.insert(*parent_hash);
-
-                                if parent_block.transaction_ids.iter().any(|id| id == tx_hash) {
-                                    tracing::info!(
-                                        "Transaction {} confirmed in parent block {} at DAA score {}",
-                                        hex::encode(tx_hash),
-                                        hex::encode(parent_block.hash),
-                                        parent_block.daa_score
+                            if block.transaction_ids.iter().any(|id| id == tx_hash) {
+                                // Sanity check: block timestamp not absurdly in the future.
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                if block.timestamp > now_ms.saturating_add(3_600_000) {
+                                    tracing::warn!(
+                                        "Block {} timestamp far in future ({} vs now {}), skipping",
+                                        hex::encode(block.hash),
+                                        block.timestamp,
+                                        now_ms
                                     );
-                                    return Ok(parent_block);
+                                } else {
+                                    tracing::info!(
+                                        "Transaction {} confirmed in block {} at DAA score {}",
+                                        hex::encode(tx_hash),
+                                        hex::encode(block.hash),
+                                        block.daa_score
+                                    );
+                                    return Ok(block);
                                 }
                             }
+
+                            // Enqueue parents for the next generation.
+                            for parent in &block.parent_hashes {
+                                if !checked_blocks.contains(parent)
+                                    && !visited_this_poll.contains(parent)
+                                {
+                                    next_gen.push(*parent);
+                                }
+                            }
+
+                            // Mark clean so future polls skip re-fetching it.
+                            checked_blocks.insert(hash);
+                        }
+                        Err(e) => {
+                            tracing::debug!("Failed to get block {}: {}", hex::encode(hash), e);
                         }
                     }
-                    Err(e) => {
-                        tracing::debug!("Failed to get block {}: {}", hex::encode(tip_hash), e);
-                    }
                 }
+
+                current_gen = next_gen;
+                generation += 1;
             }
 
-            // Wait before next poll
+            // Keep the cross-poll cache bounded.
+            if checked_blocks.len() > MAX_CHECKED_BLOCKS {
+                checked_blocks.clear();
+            }
+
             tokio::time::sleep(poll_interval).await;
         }
     }
@@ -1730,5 +1828,52 @@ mod tests {
         let client = KaspaClient::mainnet();
         assert_eq!(client.connection_state().await, ConnectionState::Disconnected);
         assert!(!client.is_connected().await);
+    }
+
+    #[test]
+    fn test_decode_blue_work_odd_length_hex() {
+        // Odd-length hex (unpadded big-endian) must decode, NOT silently zero.
+        let bw = decode_blue_work_hex("f1a2b").unwrap();
+        // "f1a2b" -> left-pad -> "0f1a2b" -> bytes [0x0f, 0x1a, 0x2b], right-aligned.
+        assert_eq!(bw[29], 0x0f);
+        assert_eq!(bw[30], 0x1a);
+        assert_eq!(bw[31], 0x2b);
+        assert_ne!(bw, [0u8; 32], "odd-length blueWork must not become all-zeros");
+
+        // Even-length still works.
+        let bw2 = decode_blue_work_hex("0102").unwrap();
+        assert_eq!(bw2[30], 0x01);
+        assert_eq!(bw2[31], 0x02);
+
+        // A single hex nibble is valid too.
+        let bw3 = decode_blue_work_hex("a").unwrap();
+        assert_eq!(bw3[31], 0x0a);
+
+        // Over-wide values and bad hex are errors, not zeros.
+        assert!(decode_blue_work_hex(&"ff".repeat(33)).is_err());
+        assert!(decode_blue_work_hex("zz").is_err());
+    }
+
+    #[test]
+    fn test_decode_hash32_strict() {
+        assert!(decode_hash32(&"ab".repeat(32), "test").is_ok());
+        // Wrong length is an error (not a silent all-zeros substitution).
+        assert!(decode_hash32(&"ab".repeat(31), "test").is_err());
+        assert!(decode_hash32("not hex", "test").is_err());
+    }
+
+    #[test]
+    fn test_is_bare_pubkey_script() {
+        // Canonical 34-byte P2PK burn script (no version prefix).
+        let mut bare = vec![0x20];
+        bare.extend_from_slice(&[0xcd; 32]);
+        bare.push(0xac);
+        assert!(is_bare_pubkey_script(&bare));
+
+        // Version-prefixed form is NOT bare (needs stripping).
+        let mut prefixed = vec![0x00, 0x00];
+        prefixed.extend_from_slice(&bare);
+        assert!(!is_bare_pubkey_script(&prefixed));
+        assert!(is_bare_pubkey_script(&prefixed[2..]));
     }
 }

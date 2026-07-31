@@ -4,6 +4,7 @@
 //! in section 6 of the technical specification.
 
 use crate::error::{KtcsError, Result};
+use crate::kaspa_types::extract_commitment_from_script;
 use crate::merkle::sha256;
 use crate::ops::apply_operations;
 use crate::types::{Attestation, KaspaAttestation, KtcsProof};
@@ -15,12 +16,26 @@ use crate::kaspa::KaspaClient;
 /// Result of proof verification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
-    /// Whether the proof is valid
+    /// Whether the proof is valid.
+    ///
+    /// For OFFLINE verification (`verify_proof`) this means: the operations
+    /// applied cleanly, and the proof carries a structurally-valid complete
+    /// (Kaspa) attestation. It does **NOT** mean the attestation was checked
+    /// against the live chain — see `chain_verified`.
     pub valid: bool,
     /// The original digest from the proof
     pub digest: String,
     /// The computed commitment (result of applying operations)
     pub computed_commitment: String,
+    /// Whether the complete attestation is structurally valid (non-zero
+    /// block/tx hashes, sane DAA score and timestamp). Offline-checkable.
+    pub structurally_valid: bool,
+    /// Whether the attestation was verified against the live blockchain.
+    ///
+    /// This is ONLY ever `true` via the online path
+    /// (`verify_attestation_on_chain`). Offline verification always leaves this
+    /// `false`, because offline verification cannot prove chain inclusion.
+    pub chain_verified: bool,
     /// Information about each attestation
     pub attestations: Vec<AttestationInfo>,
     /// Error message if verification failed
@@ -59,15 +74,25 @@ pub enum AttestationDetails {
     },
 }
 
-/// Verify a KTCS proof
+/// Verify a KTCS proof OFFLINE (no network access).
 ///
-/// This performs the computational verification:
+/// This performs the computational + structural verification:
 /// 1. If original data is provided, verify SHA256(data) matches the digest
-/// 2. Apply all operations to the digest
-/// 3. Return the computed commitment and attestation info
+/// 2. Apply all operations to the digest to compute the commitment
+/// 3. Require at least one COMPLETE (Kaspa) attestation, and run the structural
+///    sanity checker [`verify_kaspa_attestation`] on every Kaspa attestation
+///    (rejects zero block/tx hashes, zero DAA score, out-of-range timestamps).
 ///
-/// Note: Full verification against the Kaspa blockchain requires a node connection,
-/// which is handled separately by the Kaspa client module.
+/// # Trust boundary
+///
+/// Offline verification does **NOT** prove that the proof is anchored on the
+/// Kaspa blockchain. It proves only that the proof is computationally
+/// consistent and carries a *structurally* well-formed complete attestation.
+/// A caller could still fabricate an attestation with plausible-but-fake
+/// hashes and pass offline verification. To prove chain inclusion you MUST use
+/// the online path ([`verify_attestation_on_chain`]), which sets
+/// `chain_verified = true`. The `chain_verified` field returned here is always
+/// `false`.
 pub fn verify_proof(proof: &KtcsProof, original_data: Option<&[u8]>) -> Result<VerificationResult> {
     let digest_hex = hex::encode(&proof.digest);
 
@@ -79,6 +104,8 @@ pub fn verify_proof(proof: &KtcsProof, original_data: Option<&[u8]>) -> Result<V
                 valid: false,
                 digest: digest_hex.clone(),
                 computed_commitment: String::new(),
+                structurally_valid: false,
+                chain_verified: false,
                 attestations: Vec::new(),
                 error: Some(format!(
                     "Data hash mismatch: expected {}, computed {}",
@@ -97,6 +124,8 @@ pub fn verify_proof(proof: &KtcsProof, original_data: Option<&[u8]>) -> Result<V
                 valid: false,
                 digest: digest_hex,
                 computed_commitment: String::new(),
+                structurally_valid: false,
+                chain_verified: false,
                 attestations: Vec::new(),
                 error: Some(format!("Failed to apply operations: {}", e)),
             });
@@ -111,6 +140,8 @@ pub fn verify_proof(proof: &KtcsProof, original_data: Option<&[u8]>) -> Result<V
             valid: false,
             digest: digest_hex,
             computed_commitment: commitment_hex,
+            structurally_valid: false,
+            chain_verified: false,
             attestations: Vec::new(),
             error: Some("No attestations in proof".to_string()),
         });
@@ -123,19 +154,59 @@ pub fn verify_proof(proof: &KtcsProof, original_data: Option<&[u8]>) -> Result<V
         .map(attestation_to_info)
         .collect();
 
-    // Proof is valid if at least one attestation is complete
+    // Proof must carry at least one complete attestation...
     let has_complete_attestation = proof.attestations.iter().any(|a| a.is_complete());
+    if !has_complete_attestation {
+        return Ok(VerificationResult {
+            valid: false,
+            digest: digest_hex,
+            computed_commitment: commitment_hex,
+            structurally_valid: false,
+            chain_verified: false,
+            attestations,
+            error: Some("Proof is pending - no complete attestations".to_string()),
+        });
+    }
+
+    // ...and every Kaspa attestation must be STRUCTURALLY valid. We do not have
+    // the on-chain transaction payload here, so we pass `None` (no tx-payload
+    // binding); this is a structural sanity check only, NOT a chain check.
+    let commitment32: Option<[u8; 32]> = computed_commitment.as_slice().try_into().ok();
+    let mut structural_error: Option<String> = None;
+    if let Some(commitment32) = commitment32 {
+        for ka in proof.kaspa_attestations() {
+            match verify_kaspa_attestation(&commitment32, ka, None) {
+                Ok(true) => {}
+                Ok(false) => {
+                    structural_error =
+                        Some("Attestation commitment binding check failed".to_string());
+                    break;
+                }
+                Err(e) => {
+                    structural_error =
+                        Some(format!("Structurally invalid attestation: {}", e));
+                    break;
+                }
+            }
+        }
+    } else {
+        structural_error = Some(format!(
+            "Computed commitment is not 32 bytes (got {})",
+            computed_commitment.len()
+        ));
+    }
+
+    let structurally_valid = structural_error.is_none();
 
     Ok(VerificationResult {
-        valid: has_complete_attestation,
+        valid: structurally_valid,
         digest: digest_hex,
         computed_commitment: commitment_hex,
+        structurally_valid,
+        // Offline verification never proves chain inclusion.
+        chain_verified: false,
         attestations,
-        error: if !has_complete_attestation {
-            Some("Proof is pending - no complete attestations".to_string())
-        } else {
-            None
-        },
+        error: structural_error,
     })
 }
 
@@ -227,51 +298,33 @@ impl ThermodynamicMetrics {
     }
 }
 
-/// KTCS commitment prefix for identifying commitments in transaction payloads
-pub const KTCS_COMMITMENT_PREFIX: &[u8] = b"KTCS";
-
-/// Verify that a commitment matches what's in a transaction payload.
+/// Verify that a computed commitment is anchored by a given OUTPUT SCRIPT via an
+/// EXACT P2PK burn-script match: `0x20 <32-byte commitment> 0xac`.
 ///
-/// This parses the transaction payload and verifies the commitment is present.
-/// KTCS commitments are expected to be prefixed with "KTCS" followed by the 32-byte commitment.
-///
-/// Returns true if the commitment is found in the payload.
-pub fn verify_commitment_in_tx(computed_commitment: &[u8], tx_payload: &[u8]) -> bool {
-    if computed_commitment.len() != 32 {
-        return false;
+/// This is NOT a byte scan. The commitment must be the sole pushed key of a
+/// canonical 34-byte burn script; a commitment appearing at any other offset,
+/// inside a larger script, or in a change output's pubkey is rejected.
+pub fn verify_commitment_in_tx(computed_commitment: &[u8], output_script: &[u8]) -> bool {
+    match extract_commitment_from_script(output_script) {
+        Some(c) => c.as_slice() == computed_commitment,
+        None => false,
     }
-
-    // Check for KTCS-prefixed commitment: "KTCS" + 32-byte commitment = 36 bytes
-    if tx_payload.len() >= 36
-        && tx_payload.starts_with(KTCS_COMMITMENT_PREFIX)
-        && &tx_payload[4..36] == computed_commitment
-    {
-        return true;
-    }
-
-    // Also check for bare commitment (just 32 bytes)
-    if tx_payload.len() >= 32 {
-        // Scan for the commitment anywhere in the payload
-        for window in tx_payload.windows(32) {
-            if window == computed_commitment {
-                return true;
-            }
-        }
-    }
-
-    false
 }
 
 /// Verify a Kaspa attestation against the computed commitment.
 ///
-/// This performs the following checks:
-/// 1. Validates attestation structure
-/// 2. Verifies the commitment would be valid in the referenced transaction
-/// 3. Checks that attestation fields are within valid ranges
+/// This performs the following STRUCTURAL checks (offline-checkable):
+/// 1. Validates attestation version and that block/tx hashes are non-zero
+/// 2. Checks that DAA score is non-zero and the timestamp is in a sane range
+/// 3. If an output script is supplied, requires an EXACT P2PK burn-script match
+///    binding the commitment to that output (no naive byte scan)
+///
+/// Passing `None` for `output_script` performs only the structural checks; it
+/// does NOT prove the commitment is on chain.
 pub fn verify_kaspa_attestation(
     computed_commitment: &[u8; 32],
     attestation: &KaspaAttestation,
-    tx_payload: Option<&[u8]>,
+    output_script: Option<&[u8]>,
 ) -> Result<bool> {
     // Note: computed_commitment is already [u8; 32], no length check needed
 
@@ -314,9 +367,9 @@ pub fn verify_kaspa_attestation(
         )));
     }
 
-    // If transaction payload is provided, verify commitment is present
-    if let Some(payload) = tx_payload {
-        if !verify_commitment_in_tx(computed_commitment, payload) {
+    // If an output script is provided, require an exact burn-script match.
+    if let Some(script) = output_script {
+        if !verify_commitment_in_tx(computed_commitment, script) {
             return Ok(false);
         }
     }
@@ -324,49 +377,55 @@ pub fn verify_kaspa_attestation(
     Ok(true)
 }
 
-/// Compute the expected transaction payload for a given commitment.
-///
-/// This creates the standard KTCS payload format: "KTCS" + commitment
-pub fn create_commitment_payload(commitment: &[u8; 32]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(36);
-    payload.extend_from_slice(KTCS_COMMITMENT_PREFIX);
-    payload.extend_from_slice(commitment);
-    payload
-}
-
 /// Result of verifying an attestation against the live blockchain
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChainVerificationResult {
-    /// Whether the block was found and verified on chain
+    /// Whether the block was found on chain AND its DAA score matches the
+    /// attestation exactly (a DAA-score mismatch is a hard failure).
     pub block_verified: bool,
     /// Whether the transaction was found in the block
     pub tx_verified: bool,
-    /// Whether the commitment was found in the transaction payload
+    /// Whether the commitment was found in the transaction outputs via an EXACT
+    /// P2PK burn-script match
     pub commitment_verified: bool,
+    /// Whether the attestation timestamp matches the on-chain block timestamp
+    /// within tolerance
+    pub timestamp_verified: bool,
+    /// Overall chain verification result: true only if the block, transaction,
+    /// commitment (exact burn script) and timestamp all verified.
+    pub chain_verified: bool,
     /// Current DAA score of the network
     pub current_daa_score: u64,
     /// Number of blocks since the attestation
     pub blocks_since: u64,
 }
 
-/// Verify a Kaspa attestation against the live blockchain
+/// Tolerance (in milliseconds) allowed between the attestation timestamp and
+/// the on-chain block timestamp. A few seconds accommodates clock skew /
+/// rounding between the node's reported time and what was recorded at stamp
+/// time, while still rejecting a forged timestamp.
+pub const TIMESTAMP_TOLERANCE_MS: u64 = 5_000;
+
+/// Verify a Kaspa attestation against the live blockchain.
 ///
-/// This performs the following checks:
+/// This performs the following checks (all must pass for `chain_verified`):
 /// 1. Fetches the block with full transactions by hash
-/// 2. Verifies the block's DAA score matches the attestation
-/// 3. Verifies the transaction is in the block
-/// 4. Verifies the commitment is in the transaction outputs
-/// 5. Returns current chain state for thermodynamic metrics
+/// 2. Validates the node's network matches the client's configured network
+/// 3. Verifies the block's DAA score matches the attestation (hard failure)
+/// 4. Verifies the transaction is in the block
+/// 5. Verifies the commitment is in a transaction output via EXACT burn-script match
+/// 6. Verifies the attestation timestamp matches the block timestamp (tolerance)
+/// 7. Returns current chain state for thermodynamic metrics
 ///
 /// # Arguments
 ///
-/// * `client` - Connected KaspaClient
+/// * `client` - Connected KaspaClient (its config network is used for validation)
 /// * `attestation` - The Kaspa attestation to verify
 /// * `computed_commitment` - The commitment computed from the proof operations
 ///
 /// # Returns
 ///
-/// ChainVerificationResult with verification status and chain state
+/// ChainVerificationResult with per-check flags and an overall `chain_verified`.
 #[cfg(feature = "kaspa-client")]
 pub async fn verify_attestation_on_chain(
     client: &KaspaClient,
@@ -376,11 +435,28 @@ pub async fn verify_attestation_on_chain(
     // 1. Fetch block with full transactions
     let (block, transactions) = client.get_block_with_transactions(&attestation.block_hash).await?;
 
-    // 2. Verify block metadata matches attestation
+    // 1b. Network validation: the node's reported network must match the
+    // network the client was configured for (threaded through the client config
+    // rather than hardcoded). A node on the wrong network cannot attest to this
+    // proof; treat a mismatch as a hard verification failure.
+    let dag_info = client.get_block_dag_info().await?;
+    if let Some(expected_network) = client.config().network.as_deref() {
+        if !networks_match(expected_network, &dag_info.network) {
+            return Err(KtcsError::VerificationFailed(format!(
+                "Network mismatch: client expects '{}', node reports '{}'",
+                expected_network, dag_info.network
+            )));
+        }
+    }
+
+    // 2. Verify block metadata matches attestation.
+    // A DAA-score mismatch is a HARD failure: the attestation names a specific
+    // block; if that block's DAA score differs, the attestation is inconsistent
+    // with the chain and cannot be trusted.
     let block_verified = block.daa_score == attestation.daa_score;
     if !block_verified {
         tracing::warn!(
-            "DAA score mismatch: attestation has {}, block has {}",
+            "DAA score mismatch (hard failure): attestation has {}, block has {}",
             attestation.daa_score,
             block.daa_score
         );
@@ -396,43 +472,13 @@ pub async fn verify_attestation_on_chain(
         );
     }
 
-    // 4. Verify commitment in transaction outputs
+    // 4. Verify commitment in transaction outputs via EXACT P2PK burn-script
+    // match (no naive byte scan).
     let commitment_verified = if tx_verified {
-        // Find our transaction in the block's transactions
-        let tx_info = transactions.iter().find(|tx| tx.hash == attestation.tx_hash);
-
-        match tx_info {
-            Some(tx) => {
-                let mut found = false;
-                for output in &tx.outputs {
-                    // Check if this output contains our commitment
-                    // KTCS commitments are stored as: "KTCS" prefix + 32-byte commitment
-                    let script = &output.script_public_key.script;
-                    if verify_commitment_in_tx(computed_commitment, script) {
-                        found = true;
-                        break;
-                    }
-                }
-
-                // Also scan for bare commitment in output scripts
-                if !found {
-                    for output in &tx.outputs {
-                        if output.script_public_key.script.len() >= 32 {
-                            for window in output.script_public_key.script.windows(32) {
-                                if window == computed_commitment {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if found {
-                            break;
-                        }
-                    }
-                }
-
-                found
-            }
+        match transactions.iter().find(|tx| tx.hash == attestation.tx_hash) {
+            Some(tx) => tx.outputs.iter().any(|output| {
+                verify_commitment_in_tx(computed_commitment, &output.script_public_key.script)
+            }),
             None => {
                 tracing::warn!("Transaction data not found in block response");
                 false
@@ -442,17 +488,53 @@ pub async fn verify_attestation_on_chain(
         false
     };
 
-    // 5. Get current chain state for thermodynamic metrics
-    let dag_info = client.get_block_dag_info().await?;
+    // 5. Verify the attestation timestamp against the on-chain block timestamp.
+    // A forged timestamp on an otherwise-real block/tx must not pass.
+    let timestamp_verified = attestation
+        .timestamp
+        .abs_diff(block.timestamp)
+        <= TIMESTAMP_TOLERANCE_MS;
+    if !timestamp_verified {
+        tracing::warn!(
+            "Timestamp mismatch: attestation {} vs block {} (tolerance {}ms)",
+            attestation.timestamp,
+            block.timestamp,
+            TIMESTAMP_TOLERANCE_MS
+        );
+    }
+
     let blocks_since = dag_info.current_daa_score.saturating_sub(attestation.daa_score);
+
+    let chain_verified =
+        block_verified && tx_verified && commitment_verified && timestamp_verified;
 
     Ok(ChainVerificationResult {
         block_verified,
         tx_verified,
         commitment_verified,
+        timestamp_verified,
+        chain_verified,
         current_daa_score: dag_info.current_daa_score,
         blocks_since,
     })
+}
+
+/// Compare an expected network name against the one reported by the node.
+///
+/// Accepts common aliases: e.g. a client configured for "testnet" matches a
+/// node reporting "testnet-10"/"testnet-11", and vice versa.
+#[cfg(feature = "kaspa-client")]
+fn networks_match(expected: &str, reported: &str) -> bool {
+    let norm = |s: &str| -> String {
+        let s = s.to_ascii_lowercase();
+        // Collapse any testnet-NN variant to "testnet" for comparison.
+        if s.starts_with("testnet") {
+            "testnet".to_string()
+        } else {
+            s
+        }
+    };
+    norm(expected) == norm(reported)
 }
 
 #[cfg(test)]
@@ -581,31 +663,46 @@ mod tests {
         assert!(result.error.unwrap().contains("No attestations"));
     }
 
-    #[test]
-    fn test_verify_commitment_in_tx_with_prefix() {
-        let commitment = [0xab; 32];
-        let mut payload = Vec::from(KTCS_COMMITMENT_PREFIX);
-        payload.extend_from_slice(&commitment);
-
-        assert!(verify_commitment_in_tx(&commitment, &payload));
-
-        // Wrong commitment should fail
-        let wrong_commitment = [0xcd; 32];
-        assert!(!verify_commitment_in_tx(&wrong_commitment, &payload));
+    /// Build the canonical P2PK burn script for a commitment: 0x20 <32> 0xac.
+    fn burn_script(commitment: &[u8; 32]) -> Vec<u8> {
+        let mut s = vec![0x20];
+        s.extend_from_slice(commitment);
+        s.push(0xac);
+        s
     }
 
     #[test]
-    fn test_verify_commitment_in_tx_bare() {
+    fn test_verify_commitment_exact_burn_script_positive() {
+        let commitment = [0xab; 32];
+        let script = burn_script(&commitment);
+
+        // Exact burn script for the commitment matches.
+        assert!(verify_commitment_in_tx(&commitment, &script));
+
+        // A different commitment's script does not match.
+        let wrong = [0xcd; 32];
+        assert!(!verify_commitment_in_tx(&wrong, &script));
+    }
+
+    #[test]
+    fn test_verify_commitment_rejects_byte_scan() {
         let commitment = [0xab; 32];
 
-        // Bare commitment without prefix
-        assert!(verify_commitment_in_tx(&commitment, &commitment));
+        // Bare 32-byte commitment is NOT a valid burn script (no push/checksig).
+        assert!(!verify_commitment_in_tx(&commitment, &commitment));
 
-        // Commitment embedded in larger payload
-        let mut payload = vec![0x00; 10];
-        payload.extend_from_slice(&commitment);
-        payload.extend_from_slice(&[0x00; 10]);
-        assert!(verify_commitment_in_tx(&commitment, &payload));
+        // Commitment embedded at a non-canonical offset must be rejected (the
+        // old naive byte-scan would have accepted this).
+        let mut embedded = vec![0x00; 10];
+        embedded.extend_from_slice(&commitment);
+        embedded.extend_from_slice(&[0x00; 10]);
+        assert!(!verify_commitment_in_tx(&commitment, &embedded));
+
+        // A burn script wrapping a different commitment, with our commitment
+        // hidden elsewhere, is rejected because match is on the pushed key only.
+        let mut sneaky = burn_script(&[0xcd; 32]);
+        sneaky.extend_from_slice(&commitment);
+        assert!(!verify_commitment_in_tx(&commitment, &sneaky));
     }
 
     #[test]
@@ -614,6 +711,53 @@ mod tests {
         let payload = [0x00; 64]; // No matching commitment
 
         assert!(!verify_commitment_in_tx(&commitment, &payload));
+    }
+
+    #[test]
+    fn test_verify_proof_rejects_fabricated_zero_attestation() {
+        // C1 regression: a proof carrying a structurally-INVALID complete
+        // attestation (zero block/tx hashes) must NOT verify offline.
+        let digest = [0xab; 32];
+        let mut proof = KtcsProof::new(digest.to_vec());
+        proof.add_attestation(Attestation::Kaspa(KaspaAttestation::new(
+            42_000_000,
+            41_500_000,
+            [0x00; 32], // zero block hash -> structurally invalid
+            1_706_000_000_000,
+            [0x00; 32], // zero tx hash
+            0,
+            [0x12; 32],
+            vec![],
+        )));
+
+        let result = verify_proof(&proof, None).unwrap();
+        assert!(!result.valid, "fabricated zero-hash attestation must be invalid");
+        assert!(!result.structurally_valid);
+        assert!(!result.chain_verified);
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn test_verify_proof_offline_is_never_chain_verified() {
+        // Even a structurally-valid complete attestation must report
+        // chain_verified=false from the offline path.
+        let digest = [0xab; 32];
+        let mut proof = KtcsProof::new(digest.to_vec());
+        proof.add_attestation(Attestation::Kaspa(KaspaAttestation::new(
+            42_000_000,
+            41_500_000,
+            [0xde; 32],
+            1_706_000_000_000,
+            [0xab; 32],
+            0,
+            [0x12; 32],
+            vec![[0x11; 32]],
+        )));
+
+        let result = verify_proof(&proof, None).unwrap();
+        assert!(result.valid);
+        assert!(result.structurally_valid);
+        assert!(!result.chain_verified, "offline verification never proves chain inclusion");
     }
 
     #[test]
@@ -635,9 +779,9 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_kaspa_attestation_with_payload() {
+    fn test_verify_kaspa_attestation_with_output_script() {
         let commitment = [0xab; 32];
-        let payload = create_commitment_payload(&commitment);
+        let script = burn_script(&commitment);
         let attestation = KaspaAttestation::new(
             42000000,
             41500000,
@@ -649,13 +793,14 @@ mod tests {
             vec![],
         );
 
-        let result = verify_kaspa_attestation(&commitment, &attestation, Some(&payload)).unwrap();
+        // Exact burn script for this commitment binds the attestation.
+        let result = verify_kaspa_attestation(&commitment, &attestation, Some(&script)).unwrap();
         assert!(result);
 
-        // Wrong payload should fail
-        let wrong_payload = create_commitment_payload(&[0xcd; 32]);
+        // A burn script for a different commitment must fail the binding.
+        let wrong_script = burn_script(&[0xcd; 32]);
         let result =
-            verify_kaspa_attestation(&commitment, &attestation, Some(&wrong_payload)).unwrap();
+            verify_kaspa_attestation(&commitment, &attestation, Some(&wrong_script)).unwrap();
         assert!(!result);
     }
 
@@ -675,15 +820,5 @@ mod tests {
 
         let result = verify_kaspa_attestation(&commitment, &attestation, None);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_create_commitment_payload() {
-        let commitment = [0xab; 32];
-        let payload = create_commitment_payload(&commitment);
-
-        assert_eq!(payload.len(), 36);
-        assert!(payload.starts_with(KTCS_COMMITMENT_PREFIX));
-        assert_eq!(&payload[4..], &commitment);
     }
 }

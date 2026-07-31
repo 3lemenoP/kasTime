@@ -7,6 +7,7 @@ use tokio_tungstenite::connect_async;
 
 /// Try various URL formats to find a working endpoint
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn diagnose_testnet_endpoints() {
     println!("\n");
     println!("╔════════════════════════════════════════════════════════════╗");
@@ -99,6 +100,7 @@ async fn diagnose_testnet_endpoints() {
 
 /// Test mainnet connectivity (usually more reliable)
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_mainnet_connectivity() {
     println!("\n=== Testing Mainnet Connectivity ===\n");
 
@@ -183,6 +185,7 @@ async fn test_mainnet_connectivity() {
 
 /// Test fetching the PNN node list
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_fetch_pnn_nodes() {
     println!("\n=== Fetching PNN Node List ===\n");
 
@@ -254,6 +257,7 @@ async fn test_fetch_pnn_nodes() {
 
 /// Test direct connection using JSON-RPC over WebSocket (more verbose)
 #[tokio::test]
+#[ignore = "requires live network"]
 async fn test_json_rpc_connection() {
     println!("\n=== JSON-RPC WebSocket Connection Test ===\n");
 
