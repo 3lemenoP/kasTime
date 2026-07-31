@@ -65,9 +65,12 @@ pub use types::{
     Attestation, BatchMode, BitcoinAttestation, HashAlgorithm, KaspaAttestation, KtcsProof,
     Operation, PendingAttestation, KTCS_MAGIC, PROOF_VERSION,
 };
-pub use verify::{verify_proof, AttestationInfo, ChainVerificationResult, ThermodynamicMetrics, VerificationResult};
 #[cfg(feature = "kaspa-client")]
 pub use verify::verify_attestation_on_chain;
+pub use verify::{
+    verify_proof, AttestationInfo, ChainVerificationResult, ThermodynamicMetrics,
+    VerificationResult,
+};
 pub use wallet::KaspaWallet;
 // Sighash functions are pure computation - available for both kaspa-client and wasm
 pub use wallet::{
@@ -154,13 +157,13 @@ mod integration_tests {
 
         // Add Kaspa attestation (simulated block data)
         proof.add_attestation(Attestation::Kaspa(KaspaAttestation::new(
-            42000000,  // DAA score
-            41500000,  // Blue score
-            [0xab; 32], // Block hash
-            1706000000000, // Timestamp
-            [0xcd; 32], // TX hash
-            0,         // TX index
-            [0x12; 32], // Blue work
+            42000000,                     // DAA score
+            41500000,                     // Blue score
+            [0xab; 32],                   // Block hash
+            1706000000000,                // Timestamp
+            [0xcd; 32],                   // TX hash
+            0,                            // TX index
+            [0x12; 32],                   // Blue work
             vec![[0x11; 32], [0x22; 32]], // Parent hashes
         )));
 
@@ -173,7 +176,11 @@ mod integration_tests {
 
         // Verify with original document
         let verification = verify_proof(&loaded_proof, Some(document)).unwrap();
-        assert!(verification.valid, "Verification failed: {:?}", verification.error);
+        assert!(
+            verification.valid,
+            "Verification failed: {:?}",
+            verification.error
+        );
         assert_eq!(verification.digest, hex::encode(document_hash));
         assert!(!verification.computed_commitment.is_empty());
         assert_eq!(verification.attestations.len(), 1);

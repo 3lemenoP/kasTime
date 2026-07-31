@@ -13,15 +13,17 @@
 
 #[cfg(feature = "kaspa-client")]
 use crate::kaspa::{BlockInfo, KaspaClient, Transaction, Utxo};
+use crate::merkle::sha256;
 #[cfg(feature = "kaspa-client")]
 use crate::tx_builder::CommitmentTransaction;
-use crate::merkle::sha256;
 // The hardened, WASM-compatible builder in `tx_builder` is now the single
 // transaction-building path (the old unsafe `tx` module was removed).
 use crate::tx_builder::{create_commitment, generate_nonce};
 use crate::wallet::KaspaWallet;
 #[cfg(feature = "kaspa-client")]
-use crate::wallet::{compute_kaspa_sighash, SigHashType, SighashInput, SighashOutput, SighashTransaction};
+use crate::wallet::{
+    compute_kaspa_sighash, SigHashType, SighashInput, SighashOutput, SighashTransaction,
+};
 use crate::{
     error::{KtcsError, Result},
     types::{Attestation, KaspaAttestation, KtcsProof, Operation},
@@ -210,7 +212,9 @@ pub fn complete_stamp(
         block_info.parent_hashes,
     );
 
-    prepared.proof.add_attestation(Attestation::Kaspa(attestation));
+    prepared
+        .proof
+        .add_attestation(Attestation::Kaspa(attestation));
     Ok(prepared.proof)
 }
 
@@ -556,8 +560,7 @@ mod tests {
         // Different UTXOs (different amounts/scripts) should produce different signatures
         // because SIGHASH includes the UTXO data
         assert_ne!(
-            signed1.inputs[0].signature_script,
-            signed2.inputs[0].signature_script,
+            signed1.inputs[0].signature_script, signed2.inputs[0].signature_script,
             "Different UTXOs should produce different signatures"
         );
 

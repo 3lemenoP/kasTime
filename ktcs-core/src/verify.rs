@@ -148,11 +148,8 @@ pub fn verify_proof(proof: &KtcsProof, original_data: Option<&[u8]>) -> Result<V
     }
 
     // Build attestation info
-    let attestations: Vec<AttestationInfo> = proof
-        .attestations
-        .iter()
-        .map(attestation_to_info)
-        .collect();
+    let attestations: Vec<AttestationInfo> =
+        proof.attestations.iter().map(attestation_to_info).collect();
 
     // Proof must carry at least one complete attestation...
     let has_complete_attestation = proof.attestations.iter().any(|a| a.is_complete());
@@ -183,8 +180,7 @@ pub fn verify_proof(proof: &KtcsProof, original_data: Option<&[u8]>) -> Result<V
                     break;
                 }
                 Err(e) => {
-                    structural_error =
-                        Some(format!("Structurally invalid attestation: {}", e));
+                    structural_error = Some(format!("Structurally invalid attestation: {}", e));
                     break;
                 }
             }
@@ -433,7 +429,9 @@ pub async fn verify_attestation_on_chain(
     computed_commitment: &[u8; 32],
 ) -> Result<ChainVerificationResult> {
     // 1. Fetch block with full transactions
-    let (block, transactions) = client.get_block_with_transactions(&attestation.block_hash).await?;
+    let (block, transactions) = client
+        .get_block_with_transactions(&attestation.block_hash)
+        .await?;
 
     // 1b. Network validation: the node's reported network must match the
     // network the client was configured for (threaded through the client config
@@ -463,7 +461,10 @@ pub async fn verify_attestation_on_chain(
     }
 
     // 3. Verify transaction is in block
-    let tx_verified = block.transaction_ids.iter().any(|id| *id == attestation.tx_hash);
+    let tx_verified = block
+        .transaction_ids
+        .iter()
+        .any(|id| *id == attestation.tx_hash);
     if !tx_verified {
         tracing::warn!(
             "Transaction {} not found in block {}",
@@ -475,7 +476,10 @@ pub async fn verify_attestation_on_chain(
     // 4. Verify commitment in transaction outputs via EXACT P2PK burn-script
     // match (no naive byte scan).
     let commitment_verified = if tx_verified {
-        match transactions.iter().find(|tx| tx.hash == attestation.tx_hash) {
+        match transactions
+            .iter()
+            .find(|tx| tx.hash == attestation.tx_hash)
+        {
             Some(tx) => tx.outputs.iter().any(|output| {
                 verify_commitment_in_tx(computed_commitment, &output.script_public_key.script)
             }),
@@ -490,10 +494,8 @@ pub async fn verify_attestation_on_chain(
 
     // 5. Verify the attestation timestamp against the on-chain block timestamp.
     // A forged timestamp on an otherwise-real block/tx must not pass.
-    let timestamp_verified = attestation
-        .timestamp
-        .abs_diff(block.timestamp)
-        <= TIMESTAMP_TOLERANCE_MS;
+    let timestamp_verified =
+        attestation.timestamp.abs_diff(block.timestamp) <= TIMESTAMP_TOLERANCE_MS;
     if !timestamp_verified {
         tracing::warn!(
             "Timestamp mismatch: attestation {} vs block {} (tolerance {}ms)",
@@ -503,10 +505,11 @@ pub async fn verify_attestation_on_chain(
         );
     }
 
-    let blocks_since = dag_info.current_daa_score.saturating_sub(attestation.daa_score);
+    let blocks_since = dag_info
+        .current_daa_score
+        .saturating_sub(attestation.daa_score);
 
-    let chain_verified =
-        block_verified && tx_verified && commitment_verified && timestamp_verified;
+    let chain_verified = block_verified && tx_verified && commitment_verified && timestamp_verified;
 
     Ok(ChainVerificationResult {
         block_verified,
@@ -731,7 +734,10 @@ mod tests {
         )));
 
         let result = verify_proof(&proof, None).unwrap();
-        assert!(!result.valid, "fabricated zero-hash attestation must be invalid");
+        assert!(
+            !result.valid,
+            "fabricated zero-hash attestation must be invalid"
+        );
         assert!(!result.structurally_valid);
         assert!(!result.chain_verified);
         assert!(result.error.is_some());
@@ -757,7 +763,10 @@ mod tests {
         let result = verify_proof(&proof, None).unwrap();
         assert!(result.valid);
         assert!(result.structurally_valid);
-        assert!(!result.chain_verified, "offline verification never proves chain inclusion");
+        assert!(
+            !result.chain_verified,
+            "offline verification never proves chain inclusion"
+        );
     }
 
     #[test]

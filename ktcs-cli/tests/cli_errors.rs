@@ -154,7 +154,12 @@ fn test_stamp_invalid_mode() {
 
     Command::cargo_bin("ktcs")
         .unwrap()
-        .args(["stamp", "--mode", "ultrafast", file.path().to_str().unwrap()])
+        .args([
+            "stamp",
+            "--mode",
+            "ultrafast",
+            file.path().to_str().unwrap(),
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("Invalid batch mode"));
@@ -192,7 +197,9 @@ fn test_wallet_address_without_key() {
         .args(["wallet", "address"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("wallet-file").or(predicate::str::contains("wallet-stdin")));
+        .stderr(
+            predicate::str::contains("wallet-file").or(predicate::str::contains("wallet-stdin")),
+        );
 }
 
 #[test]

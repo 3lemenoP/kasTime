@@ -156,7 +156,8 @@ pub struct Transaction {
 }
 
 /// Kaspa native subnetwork ID (all zeros for native transactions)
-pub const SUBNETWORK_ID_NATIVE: [u8; 20] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+pub const SUBNETWORK_ID_NATIVE: [u8; 20] =
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 impl Transaction {
     /// Create a new standard transaction

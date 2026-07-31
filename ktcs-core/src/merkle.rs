@@ -206,7 +206,8 @@ impl MerkleTree {
             debug_assert!(
                 layer_index < layer.len(),
                 "Merkle proof index {} out of bounds for layer of size {}",
-                layer_index, layer.len()
+                layer_index,
+                layer.len()
             );
             let sibling_index = if layer_index % 2 == 0 {
                 layer_index + 1
@@ -412,8 +413,9 @@ mod tests {
         let hash = sha256(data);
 
         // Known SHA256 of "hello world"
-        let expected = hex::decode("b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9")
-            .unwrap();
+        let expected =
+            hex::decode("b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9")
+                .unwrap();
         assert_eq!(hash.to_vec(), expected);
     }
 

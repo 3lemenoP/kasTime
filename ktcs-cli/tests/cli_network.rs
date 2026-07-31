@@ -168,11 +168,16 @@ async fn test_stamp_async_creates_pending_proof() {
     assert!(output_file.path().exists());
     let proof_bytes = std::fs::read(output_file.path()).unwrap();
     let proof = ktcs_core::deserialize_proof(&proof_bytes).unwrap();
-    let has_server_url = proof.attestations.iter().any(|a| matches!(
-        a,
-        Attestation::Pending(p) if p.calendar_url.contains(MOCK_STAMP_ID)
-    ));
-    assert!(has_server_url, "pending proof must embed the server-returned stamp id");
+    let has_server_url = proof.attestations.iter().any(|a| {
+        matches!(
+            a,
+            Attestation::Pending(p) if p.calendar_url.contains(MOCK_STAMP_ID)
+        )
+    });
+    assert!(
+        has_server_url,
+        "pending proof must embed the server-returned stamp id"
+    );
 }
 
 #[tokio::test]
@@ -520,7 +525,10 @@ async fn test_complete_rejects_invalid_calendar_proof() {
 
     // The input file must be UNCHANGED (still the original pending proof).
     let after = std::fs::read(proof_file.path()).unwrap();
-    assert_eq!(after, proof_content, "input must not be overwritten on rejection");
+    assert_eq!(
+        after, proof_content,
+        "input must not be overwritten on rejection"
+    );
 }
 
 #[test]
@@ -758,14 +766,28 @@ fn test_wallet_generate_different_networks() {
     // Generate for mainnet
     let output_main = Command::cargo_bin("ktcs")
         .unwrap()
-        .args(["wallet", "generate", "--format", "json", "--network", "mainnet"])
+        .args([
+            "wallet",
+            "generate",
+            "--format",
+            "json",
+            "--network",
+            "mainnet",
+        ])
         .output()
         .unwrap();
 
     // Generate for testnet
     let output_test = Command::cargo_bin("ktcs")
         .unwrap()
-        .args(["wallet", "generate", "--format", "json", "--network", "testnet"])
+        .args([
+            "wallet",
+            "generate",
+            "--format",
+            "json",
+            "--network",
+            "testnet",
+        ])
         .output()
         .unwrap();
 
@@ -811,7 +833,12 @@ fn test_wallet_generate_to_file() {
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "key file must be 0600, got {:o}", mode & 0o777);
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "key file must be 0600, got {:o}",
+            mode & 0o777
+        );
     }
 }
 

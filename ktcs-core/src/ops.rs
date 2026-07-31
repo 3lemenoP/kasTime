@@ -168,10 +168,7 @@ mod tests {
     #[test]
     fn test_apply_operations_sequence() {
         let digest = vec![0x01, 0x02];
-        let operations = vec![
-            Operation::Append(vec![0x03, 0x04]),
-            Operation::Sha256,
-        ];
+        let operations = vec![Operation::Append(vec![0x03, 0x04]), Operation::Sha256];
 
         let result = apply_operations(&digest, &operations).unwrap();
 
@@ -208,10 +205,7 @@ mod tests {
     fn test_merkle_proof_operations() {
         // Simulate a Merkle proof with one sibling on the right
         let sibling = [0xcd; 32];
-        let operations = vec![
-            Operation::Append(sibling.to_vec()),
-            Operation::Sha256,
-        ];
+        let operations = vec![Operation::Append(sibling.to_vec()), Operation::Sha256];
 
         let leaf = [0xab; 32];
         let result = apply_operations(&leaf, &operations).unwrap();
@@ -231,20 +225,19 @@ mod tests {
         // must be rejected rather than allowed to balloon memory.
         let digest = vec![0u8; 32];
         let chunk = vec![0xAAu8; 1024 * 1024]; // 1 MB (== MAX_OPERATION_DATA_SIZE)
-        // 11 x 1MB appends -> 11 MB > 10 MB cap.
-        let operations: Vec<Operation> = (0..11)
-            .map(|_| Operation::Append(chunk.clone()))
-            .collect();
+                                               // 11 x 1MB appends -> 11 MB > 10 MB cap.
+        let operations: Vec<Operation> =
+            (0..11).map(|_| Operation::Append(chunk.clone())).collect();
 
         let result = apply_operations(&digest, &operations);
-        assert!(result.is_err(), "oversized cumulative state must be rejected");
+        assert!(
+            result.is_err(),
+            "oversized cumulative state must be rejected"
+        );
         assert!(result.unwrap_err().to_string().contains("exceed"));
 
         // A modest sequence well under the cap still succeeds.
-        let small_ops = vec![
-            Operation::Append(vec![0x01; 1024]),
-            Operation::Sha256,
-        ];
+        let small_ops = vec![Operation::Append(vec![0x01; 1024]), Operation::Sha256];
         assert!(apply_operations(&digest, &small_ops).is_ok());
     }
 

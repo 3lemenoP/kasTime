@@ -313,7 +313,10 @@ mod tests {
 
     #[test]
     fn test_hash_algorithm_conversion() {
-        assert_eq!(HashAlgorithm::try_from(0x08).unwrap(), HashAlgorithm::Sha256);
+        assert_eq!(
+            HashAlgorithm::try_from(0x08).unwrap(),
+            HashAlgorithm::Sha256
+        );
         assert_eq!(
             HashAlgorithm::try_from(0x14).unwrap(),
             HashAlgorithm::Ripemd160

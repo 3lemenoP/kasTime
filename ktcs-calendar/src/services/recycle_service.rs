@@ -9,7 +9,7 @@ use ktcs_core::{sign_transaction, TransferTransactionBuilder};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
-use tracing::{info, warn, error, debug};
+use tracing::{debug, error, info, warn};
 
 /// Result type for recycle operations
 pub type Result<T> = std::result::Result<T, RecycleError>;
@@ -128,7 +128,9 @@ impl RecycleService {
         let utxos = self.kaspa_service.return_utxos.read().await.clone();
 
         // Get wallets
-        let return_wallet = self.kaspa_service.return_wallet()
+        let return_wallet = self
+            .kaspa_service
+            .return_wallet()
             .ok_or(RecycleError::NotEnabled)?;
         let stamp_address = self.kaspa_service.config().wallet_address.clone();
 
@@ -152,7 +154,9 @@ impl RecycleService {
             .map_err(|e| RecycleError::SigningFailed(e.to_string()))?;
 
         // Submit transaction
-        let tx_hash = self.kaspa_service.client
+        let tx_hash = self
+            .kaspa_service
+            .client
             .submit_transaction(signed_tx)
             .await
             .map_err(|e| RecycleError::SubmissionFailed(e.to_string()))?;
@@ -188,9 +192,8 @@ impl RecycleService {
     /// Periodically checks the RETURN wallet balance and initiates recycling
     /// when above the threshold. Runs until shutdown signal is received.
     pub async fn run_loop(&self, mut shutdown: broadcast::Receiver<()>) {
-        let poll_interval = Duration::from_secs(
-            self.kaspa_service.config().recycle_poll_interval_secs
-        );
+        let poll_interval =
+            Duration::from_secs(self.kaspa_service.config().recycle_poll_interval_secs);
 
         let mut interval = tokio::time::interval(poll_interval);
 

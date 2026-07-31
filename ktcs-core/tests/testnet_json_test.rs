@@ -2,10 +2,10 @@
 //!
 //! Run with: cargo test --package ktcs-core --test testnet_json_test --features kaspa-client -- --nocapture
 
+use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
-use futures_util::{SinkExt, StreamExt};
 
 /// Test JSON-encoded mainnet endpoint with JSON-RPC
 #[tokio::test]
@@ -17,10 +17,7 @@ async fn test_json_endpoint_mainnet() {
     let url = "wss://kaspa.aspectron.com/wrpc/json/mainnet";
     println!("Connecting to: {}", url);
 
-    let ws_result = tokio::time::timeout(
-        Duration::from_secs(15),
-        connect_async(url)
-    ).await;
+    let ws_result = tokio::time::timeout(Duration::from_secs(15), connect_async(url)).await;
 
     let mut ws = match ws_result {
         Ok(Ok((ws, response))) => {
@@ -101,10 +98,7 @@ async fn test_kaspa_rpc_methods() {
 
     let url = "wss://kaspa.aspectron.com/wrpc/json/mainnet";
 
-    let ws_result = tokio::time::timeout(
-        Duration::from_secs(15),
-        connect_async(url)
-    ).await;
+    let ws_result = tokio::time::timeout(Duration::from_secs(15), connect_async(url)).await;
 
     let mut ws = match ws_result {
         Ok(Ok((ws, _))) => {
@@ -193,10 +187,7 @@ async fn test_kaspa_native_format() {
 
     let url = "wss://kaspa.aspectron.com/wrpc/json/mainnet";
 
-    let ws_result = tokio::time::timeout(
-        Duration::from_secs(15),
-        connect_async(url)
-    ).await;
+    let ws_result = tokio::time::timeout(Duration::from_secs(15), connect_async(url)).await;
 
     let mut ws = match ws_result {
         Ok(Ok((ws, _))) => {

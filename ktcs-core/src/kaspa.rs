@@ -9,15 +9,15 @@
 
 use crate::error::{KtcsError, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 #[cfg(feature = "kaspa-client")]
 use {
     futures_util::{SinkExt, StreamExt},
-    tokio::sync::{mpsc, RwLock, oneshot},
-    tokio_tungstenite::{connect_async, tungstenite::Message},
     std::collections::HashMap,
+    tokio::sync::{mpsc, oneshot, RwLock},
+    tokio_tungstenite::{connect_async, tungstenite::Message},
 };
 
 #[cfg(not(feature = "kaspa-client"))]
@@ -321,7 +321,9 @@ impl KaspaClient {
                         // matching pending id) are not delivered — see the
                         // subscribe_* methods, which report subscriptions as
                         // unsupported rather than silently dropping events.
-                        if let Ok(response) = serde_json::from_str::<RpcResponse<serde_json::Value>>(&text) {
+                        if let Ok(response) =
+                            serde_json::from_str::<RpcResponse<serde_json::Value>>(&text)
+                        {
                             let mut pending = pending_requests.write().await;
                             if let Some(sender) = pending.remove(&response.id) {
                                 let _ = sender.send(text);
@@ -412,7 +414,9 @@ impl KaspaClient {
         if sender.send(request_json).await.is_err() {
             self.pending_requests.write().await.remove(&id);
             *self.state.write().await = ConnectionState::Disconnected;
-            return Err(KtcsError::ConnectionError("Failed to send request".to_string()));
+            return Err(KtcsError::ConnectionError(
+                "Failed to send request".to_string(),
+            ));
         }
 
         // Wait for response with timeout
@@ -443,9 +447,10 @@ impl KaspaClient {
         }
 
         // Kaspa wRPC returns results in `params` field, standard JSON-RPC uses `result`
-        response.result.or(response.params).ok_or_else(|| {
-            KtcsError::InvalidData("Empty response from Kaspa node".to_string())
-        })
+        response
+            .result
+            .or(response.params)
+            .ok_or_else(|| KtcsError::InvalidData("Empty response from Kaspa node".to_string()))
     }
 
     /// Disconnect from the Kaspa node.
@@ -601,7 +606,10 @@ impl KaspaClient {
             timestamp: header.timestamp,
             parent_hashes,
             transaction_ids,
-            is_chain_block: block.verbose_data.map(|v| v.is_chain_block).unwrap_or(false),
+            is_chain_block: block
+                .verbose_data
+                .map(|v| v.is_chain_block)
+                .unwrap_or(false),
         })
     }
 
@@ -614,7 +622,10 @@ impl KaspaClient {
     ///
     /// This is useful for verifying commitments in transaction payloads.
     #[cfg(feature = "kaspa-client")]
-    pub async fn get_block_with_transactions(&self, hash: &[u8; 32]) -> Result<(BlockInfo, Vec<TransactionInfo>)> {
+    pub async fn get_block_with_transactions(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<(BlockInfo, Vec<TransactionInfo>)> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct BlockHeader {
@@ -730,32 +741,40 @@ impl KaspaClient {
             .parents
             .first()
             .map(|level| {
-                level.iter().filter_map(|h| {
-                    let bytes = hex::decode(h).ok()?;
-                    if bytes.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&bytes);
-                        Some(arr)
-                    } else {
-                        None
-                    }
-                }).collect()
+                level
+                    .iter()
+                    .filter_map(|h| {
+                        let bytes = hex::decode(h).ok()?;
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            Some(arr)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
             })
             .unwrap_or_default();
 
         // Parse transaction IDs
-        let transaction_ids: Vec<[u8; 32]> = block.verbose_data.as_ref()
+        let transaction_ids: Vec<[u8; 32]> = block
+            .verbose_data
+            .as_ref()
             .map(|v| {
-                v.transaction_ids.iter().filter_map(|t| {
-                    let bytes = hex::decode(t).ok()?;
-                    if bytes.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&bytes);
-                        Some(arr)
-                    } else {
-                        None
-                    }
-                }).collect()
+                v.transaction_ids
+                    .iter()
+                    .filter_map(|t| {
+                        let bytes = hex::decode(t).ok()?;
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            Some(arr)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
             })
             .unwrap_or_default();
 
@@ -767,15 +786,21 @@ impl KaspaClient {
             timestamp: header.timestamp,
             parent_hashes,
             transaction_ids,
-            is_chain_block: block.verbose_data.map(|v| v.is_chain_block).unwrap_or(false),
+            is_chain_block: block
+                .verbose_data
+                .map(|v| v.is_chain_block)
+                .unwrap_or(false),
         };
 
         // Parse transactions
-        let transactions: Vec<TransactionInfo> = block.transactions
+        let transactions: Vec<TransactionInfo> = block
+            .transactions
             .unwrap_or_default()
             .into_iter()
             .filter_map(|tx| {
-                let tx_hash = tx.verbose_data.as_ref()
+                let tx_hash = tx
+                    .verbose_data
+                    .as_ref()
                     .and_then(|v| hex::decode(&v.transaction_id).ok())
                     .and_then(|bytes| {
                         if bytes.len() == 32 {
@@ -787,7 +812,9 @@ impl KaspaClient {
                         }
                     })?;
 
-                let block_hash = tx.verbose_data.as_ref()
+                let block_hash = tx
+                    .verbose_data
+                    .as_ref()
                     .and_then(|v| hex::decode(&v.block_hash).ok())
                     .and_then(|bytes| {
                         if bytes.len() == 32 {
@@ -799,39 +826,48 @@ impl KaspaClient {
                         }
                     });
 
-                let outputs: Vec<TransactionOutput> = tx.outputs.into_iter().map(|o| {
-                    let script_bytes = hex::decode(o.script_public_key.as_hex()).unwrap_or_default();
-                    TransactionOutput {
-                        amount: o.value,
-                        script_public_key: ScriptPublicKey {
-                            version: 0,
-                            script: script_bytes,
-                        },
-                    }
-                }).collect();
+                let outputs: Vec<TransactionOutput> = tx
+                    .outputs
+                    .into_iter()
+                    .map(|o| {
+                        let script_bytes =
+                            hex::decode(o.script_public_key.as_hex()).unwrap_or_default();
+                        TransactionOutput {
+                            amount: o.value,
+                            script_public_key: ScriptPublicKey {
+                                version: 0,
+                                script: script_bytes,
+                            },
+                        }
+                    })
+                    .collect();
 
-                let inputs: Vec<TransactionInput> = tx.inputs.into_iter().map(|i| {
-                    let prev_hash = hex::decode(&i.previous_outpoint.transaction_id)
-                        .ok()
-                        .and_then(|v| {
-                            if v.len() == 32 {
-                                let mut arr = [0u8; 32];
-                                arr.copy_from_slice(&v);
-                                Some(arr)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or([0u8; 32]);
+                let inputs: Vec<TransactionInput> = tx
+                    .inputs
+                    .into_iter()
+                    .map(|i| {
+                        let prev_hash = hex::decode(&i.previous_outpoint.transaction_id)
+                            .ok()
+                            .and_then(|v| {
+                                if v.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(&v);
+                                    Some(arr)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or([0u8; 32]);
 
-                    let sig_script = hex::decode(&i.signature_script).unwrap_or_default();
+                        let sig_script = hex::decode(&i.signature_script).unwrap_or_default();
 
-                    TransactionInput {
-                        previous_outpoint_hash: prev_hash,
-                        previous_outpoint_index: i.previous_outpoint.index,
-                        signature_script: sig_script,
-                    }
-                }).collect();
+                        TransactionInput {
+                            previous_outpoint_hash: prev_hash,
+                            previous_outpoint_index: i.previous_outpoint.index,
+                            signature_script: sig_script,
+                        }
+                    })
+                    .collect();
 
                 Some(TransactionInfo {
                     hash: tx_hash,
@@ -847,7 +883,10 @@ impl KaspaClient {
     }
 
     #[cfg(not(feature = "kaspa-client"))]
-    pub async fn get_block_with_transactions(&self, hash: &[u8; 32]) -> Result<(BlockInfo, Vec<TransactionInfo>)> {
+    pub async fn get_block_with_transactions(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<(BlockInfo, Vec<TransactionInfo>)> {
         Err(KtcsError::BlockNotFound(hex::encode(hash)))
     }
 
@@ -877,7 +916,9 @@ impl KaspaClient {
             virtual_parent_hashes: Vec<String>,
         }
 
-        let response: DagInfoResponse = self.send_request("getBlockDagInfo", serde_json::json!({})).await?;
+        let response: DagInfoResponse = self
+            .send_request("getBlockDagInfo", serde_json::json!({}))
+            .await?;
 
         // Parse tip hashes
         let tip_hashes: Vec<[u8; 32]> = response
@@ -1001,7 +1042,10 @@ impl KaspaClient {
         let tx_id = hex::encode(hash);
         let params = serde_json::json!({ "transactionId": tx_id });
 
-        match self.send_request::<_, GetTransactionResponse>("getTransaction", params).await {
+        match self
+            .send_request::<_, GetTransactionResponse>("getTransaction", params)
+            .await
+        {
             Ok(response) => {
                 // Parse block_hash if present
                 let block_hash = response.block_hash.as_ref().and_then(|h| {
@@ -1017,11 +1061,13 @@ impl KaspaClient {
                 });
 
                 // Convert outputs
-                let outputs: Vec<TransactionOutput> = response.transaction.outputs
+                let outputs: Vec<TransactionOutput> = response
+                    .transaction
+                    .outputs
                     .into_iter()
                     .map(|o| {
-                        let script_bytes = hex::decode(&o.script_public_key.script_public_key)
-                            .unwrap_or_default();
+                        let script_bytes =
+                            hex::decode(&o.script_public_key.script_public_key).unwrap_or_default();
                         TransactionOutput {
                             amount: o.amount,
                             script_public_key: ScriptPublicKey {
@@ -1033,7 +1079,9 @@ impl KaspaClient {
                     .collect();
 
                 // Convert inputs
-                let inputs: Vec<TransactionInput> = response.transaction.inputs
+                let inputs: Vec<TransactionInput> = response
+                    .transaction
+                    .inputs
                     .into_iter()
                     .map(|i| {
                         let prev_hash = hex::decode(&i.previous_outpoint.transaction_id)
@@ -1107,9 +1155,14 @@ impl KaspaClient {
             "filterTransactionPool": true
         });
 
-        match self.send_request::<_, MempoolEntryResponse>("getMempoolEntry", params).await {
+        match self
+            .send_request::<_, MempoolEntryResponse>("getMempoolEntry", params)
+            .await
+        {
             Ok(_) => Ok(true),
-            Err(KtcsError::ConnectionError(msg)) if msg.contains("transaction is not in the pool") => {
+            Err(KtcsError::ConnectionError(msg))
+                if msg.contains("transaction is not in the pool") =>
+            {
                 Ok(false)
             }
             Err(e) => Err(e),
@@ -1337,10 +1390,7 @@ impl KaspaClient {
                     transaction_id,
                     index: entry.outpoint.index,
                     amount: entry.utxo_entry.amount,
-                    script_public_key: ScriptPublicKey {
-                        version,
-                        script,
-                    },
+                    script_public_key: ScriptPublicKey { version, script },
                     block_daa_score: entry.utxo_entry.block_daa_score,
                     is_coinbase: entry.utxo_entry.is_coinbase,
                 })
@@ -1379,10 +1429,7 @@ impl KaspaClient {
     /// The event_sender field stores the channel but notification delivery
     /// requires handling notifications in the WebSocket receive loop.
     #[cfg(feature = "kaspa-client")]
-    pub async fn subscribe_to_block_added(
-        &self,
-        _sender: mpsc::Sender<BlockEvent>,
-    ) -> Result<()> {
+    pub async fn subscribe_to_block_added(&self, _sender: mpsc::Sender<BlockEvent>) -> Result<()> {
         // Honest failure: the WebSocket read loop routes JSON-RPC responses by
         // id and does NOT route notifications, so subscribing here would send
         // events into a channel that never receives anything. Rather than
@@ -1397,10 +1444,7 @@ impl KaspaClient {
     }
 
     #[cfg(not(feature = "kaspa-client"))]
-    pub async fn subscribe_to_block_added(
-        &self,
-        _sender: mpsc::Sender<BlockEvent>,
-    ) -> Result<()> {
+    pub async fn subscribe_to_block_added(&self, _sender: mpsc::Sender<BlockEvent>) -> Result<()> {
         Err(KtcsError::ConnectionError(
             "Kaspa client feature is not enabled".to_string(),
         ))
@@ -1508,7 +1552,9 @@ impl KaspaClient {
         loop {
             if start.elapsed() > timeout {
                 tracing::warn!("Transaction confirmation timeout after {}ms", timeout_ms);
-                return Err(KtcsError::Other("Transaction confirmation timeout".to_string()));
+                return Err(KtcsError::Other(
+                    "Transaction confirmation timeout".to_string(),
+                ));
             }
 
             let dag_info = match self.get_block_dag_info().await {
@@ -1607,9 +1653,10 @@ impl KaspaClient {
         tx_hash: &[u8; 32],
         _timeout_ms: u64,
     ) -> Result<BlockInfo> {
-        Err(KtcsError::ConnectionError(
-            format!("Kaspa client feature is not enabled. Cannot wait for transaction {}", hex::encode(tx_hash)),
-        ))
+        Err(KtcsError::ConnectionError(format!(
+            "Kaspa client feature is not enabled. Cannot wait for transaction {}",
+            hex::encode(tx_hash)
+        )))
     }
 
     /// Get the configuration
@@ -1826,7 +1873,10 @@ mod tests {
     #[tokio::test]
     async fn test_connection_state() {
         let client = KaspaClient::mainnet();
-        assert_eq!(client.connection_state().await, ConnectionState::Disconnected);
+        assert_eq!(
+            client.connection_state().await,
+            ConnectionState::Disconnected
+        );
         assert!(!client.is_connected().await);
     }
 
@@ -1838,7 +1888,10 @@ mod tests {
         assert_eq!(bw[29], 0x0f);
         assert_eq!(bw[30], 0x1a);
         assert_eq!(bw[31], 0x2b);
-        assert_ne!(bw, [0u8; 32], "odd-length blueWork must not become all-zeros");
+        assert_ne!(
+            bw, [0u8; 32],
+            "odd-length blueWork must not become all-zeros"
+        );
 
         // Even-length still works.
         let bw2 = decode_blue_work_hex("0102").unwrap();

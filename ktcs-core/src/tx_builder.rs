@@ -184,7 +184,8 @@ impl TransactionBuilder {
         };
 
         // Calculate total input
-        let total_input: u64 = self.inputs
+        let total_input: u64 = self
+            .inputs
             .iter()
             .map(|(u, _)| u.amount)
             .try_fold(0u64, |acc, amount| acc.checked_add(amount))
@@ -241,12 +242,13 @@ impl TransactionBuilder {
         let change_amount = total_input - total_required;
 
         // Check dust threshold - if change is below dust, absorb it into the fee
-        let (final_change_amount, final_fee) = if change_amount > 0 && change_amount < DUST_THRESHOLD {
-            // Absorb dust change into the fee
-            (0, fee + change_amount)
-        } else {
-            (change_amount, fee)
-        };
+        let (final_change_amount, final_fee) =
+            if change_amount > 0 && change_amount < DUST_THRESHOLD {
+                // Absorb dust change into the fee
+                (0, fee + change_amount)
+            } else {
+                (change_amount, fee)
+            };
 
         // Add outputs
         tx.add_output(commitment_output);
@@ -312,7 +314,9 @@ fn estimate_transaction_mass(num_inputs: usize, num_outputs: usize) -> Result<u6
         .checked_add(BYTES_PER_INPUT.checked_mul(inputs).ok_or_else(overflow)?)
         .and_then(|v| v.checked_add(BYTES_PER_OUTPUT.checked_mul(outputs)?))
         .ok_or_else(overflow)?;
-    let size_mass = size_bytes.checked_mul(MASS_PER_TX_BYTE).ok_or_else(overflow)?;
+    let size_mass = size_bytes
+        .checked_mul(MASS_PER_TX_BYTE)
+        .ok_or_else(overflow)?;
 
     // Per-output scriptPubKey-byte component.
     let scriptpubkey_mass = SCRIPT_PUBKEY_BYTES_PER_OUTPUT
@@ -542,7 +546,8 @@ impl TransferTransactionBuilder {
 
         let dest_script = address_to_script(&destination)?;
 
-        let total_input: u64 = self.inputs
+        let total_input: u64 = self
+            .inputs
             .iter()
             .map(|u| u.amount)
             .try_fold(0u64, |acc, amount| acc.checked_add(amount))
@@ -772,10 +777,7 @@ mod tests {
     fn test_select_utxos_overflow_is_checked() {
         // Two near-u64::MAX UTXOs would overflow a naive running sum; the
         // checked arithmetic must surface an error rather than wrap.
-        let utxos = vec![
-            create_test_utxo(u64::MAX, 0),
-            create_test_utxo(u64::MAX, 1),
-        ];
+        let utxos = vec![create_test_utxo(u64::MAX, 0), create_test_utxo(u64::MAX, 1)];
         // Target larger than any single UTXO forces summing both.
         let result = select_utxos(&utxos, u64::MAX, 1);
         assert!(result.is_err());

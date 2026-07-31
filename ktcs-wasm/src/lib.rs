@@ -292,7 +292,9 @@ pub fn get_wallet_address(private_key_hex: &str, network: &str) -> Result<String
 
     if key_bytes.len() != 32 {
         key_bytes.zeroize();
-        return Err(JsValue::from_str("Private key must be 32 bytes (64 hex chars)"));
+        return Err(JsValue::from_str(
+            "Private key must be 32 bytes (64 hex chars)",
+        ));
     }
 
     let mut key_array = [0u8; 32];
@@ -326,7 +328,9 @@ pub fn get_wallet_info(private_key_hex: &str, network: &str) -> Result<JsValue, 
 
     if key_bytes.len() != 32 {
         key_bytes.zeroize();
-        return Err(JsValue::from_str("Private key must be 32 bytes (64 hex chars)"));
+        return Err(JsValue::from_str(
+            "Private key must be 32 bytes (64 hex chars)",
+        ));
     }
 
     let mut key_array = [0u8; 32];
@@ -344,7 +348,8 @@ pub fn get_wallet_info(private_key_hex: &str, network: &str) -> Result<JsValue, 
             network: network.to_string(),
         };
 
-        serde_wasm_bindgen::to_value(&info).map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
+        serde_wasm_bindgen::to_value(&info)
+            .map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
     })();
 
     key_array.zeroize(); // Clear array after use
@@ -376,9 +381,9 @@ pub fn validate_address(address: &str) -> bool {
 /// UTXO info from JavaScript
 #[derive(Serialize, Deserialize)]
 pub struct WasmUtxo {
-    pub transaction_id: String,  // hex
+    pub transaction_id: String, // hex
     pub index: u32,
-    pub amount: String,          // sompi as string to preserve precision
+    pub amount: String, // sompi as string to preserve precision
     pub script_public_key_hex: String,
     pub block_daa_score: u64,
     pub is_coinbase: bool,
@@ -388,7 +393,7 @@ pub struct WasmUtxo {
 #[derive(Serialize, Deserialize)]
 pub struct WasmTransactionResult {
     pub transaction_json: String,
-    pub commitment: String,       // hex
+    pub commitment: String, // hex
     pub total_input: u64,
     pub total_output: u64,
     pub fee: u64,
@@ -488,17 +493,16 @@ pub fn build_commitment_transaction(
                 .map_err(|e| JsValue::from_str(&format!("Invalid script hex: {}", e)))?;
 
             // Parse amount from string to preserve precision for large values
-            let amount: u64 = u.amount.parse()
+            let amount: u64 = u
+                .amount
+                .parse()
                 .map_err(|e| JsValue::from_str(&format!("Invalid amount: {}", e)))?;
 
             Ok(Utxo {
                 transaction_id: tx_id_array,
                 index: u.index,
                 amount,
-                script_public_key: ScriptPublicKey {
-                    version: 0,
-                    script,
-                },
+                script_public_key: ScriptPublicKey { version: 0, script },
                 block_daa_score: u.block_daa_score,
                 is_coinbase: u.is_coinbase,
             })
@@ -508,8 +512,9 @@ pub fn build_commitment_transaction(
     let utxos = utxos?;
 
     // Select UTXOs to cover commitment burn + fee
-    let (selected_utxos, _total) = select_utxos_for_tx(&utxos, COMMITMENT_BURN_AMOUNT, fee_per_gram)
-        .map_err(|e| JsValue::from_str(&format!("UTXO selection failed: {}", e)))?;
+    let (selected_utxos, _total) =
+        select_utxos_for_tx(&utxos, COMMITMENT_BURN_AMOUNT, fee_per_gram)
+            .map_err(|e| JsValue::from_str(&format!("UTXO selection failed: {}", e)))?;
 
     // Build transaction
     let tx_result = TransactionBuilder::new()
@@ -534,7 +539,8 @@ pub fn build_commitment_transaction(
         change_amount: tx_result.change_amount,
     };
 
-    serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
+    serde_wasm_bindgen::to_value(&result)
+        .map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
 }
 
 // =============================================================================
@@ -545,7 +551,7 @@ pub fn build_commitment_transaction(
 #[derive(Serialize, Deserialize)]
 pub struct WasmSignedTransaction {
     pub transaction_json: String,
-    pub transaction_id: String,  // hex
+    pub transaction_id: String, // hex
 }
 
 /// Sign a transaction
@@ -607,17 +613,16 @@ pub fn sign_transaction(
                     .map_err(|e| JsValue::from_str(&format!("Invalid script hex: {}", e)))?;
 
                 // Parse amount from string to preserve precision for large values
-                let amount: u64 = u.amount.parse()
+                let amount: u64 = u
+                    .amount
+                    .parse()
                     .map_err(|e| JsValue::from_str(&format!("Invalid amount: {}", e)))?;
 
                 Ok(Utxo {
                     transaction_id: tx_id_array,
                     index: u.index,
                     amount,
-                    script_public_key: ScriptPublicKey {
-                        version: 0,
-                        script,
-                    },
+                    script_public_key: ScriptPublicKey { version: 0, script },
                     block_daa_score: u.block_daa_score,
                     is_coinbase: u.is_coinbase,
                 })
@@ -668,7 +673,8 @@ pub fn sign_transaction(
             transaction_id: hex::encode(tx_id),
         };
 
-        serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
+        serde_wasm_bindgen::to_value(&result)
+            .map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
     })();
 
     key_array.zeroize(); // Clear array after use
@@ -676,7 +682,10 @@ pub fn sign_transaction(
 }
 
 /// Build sighash transaction structure for signing
-fn build_sighash_transaction(tx: &Transaction, utxos: &[Utxo]) -> Result<SighashTransaction, JsValue> {
+fn build_sighash_transaction(
+    tx: &Transaction,
+    utxos: &[Utxo],
+) -> Result<SighashTransaction, JsValue> {
     let inputs: Result<Vec<SighashInput>, JsValue> = tx
         .inputs
         .iter()
@@ -837,10 +846,10 @@ fn compute_transaction_id_with_sequence(tx: &Transaction, sequence: u64) -> [u8;
 /// Pending proof info
 #[derive(Serialize, Deserialize)]
 pub struct WasmPendingProof {
-    pub digest: String,        // hex
-    pub nonce: String,         // hex
-    pub commitment: String,    // hex
-    pub proof_bytes: Vec<u8>,  // Serialized proof without attestation
+    pub digest: String,       // hex
+    pub nonce: String,        // hex
+    pub commitment: String,   // hex
+    pub proof_bytes: Vec<u8>, // Serialized proof without attestation
 }
 
 /// Build a pending proof (before blockchain confirmation)
@@ -883,18 +892,19 @@ pub fn build_pending_proof(digest_hex: &str, nonce_hex: &str) -> Result<JsValue,
         proof_bytes,
     };
 
-    serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
+    serde_wasm_bindgen::to_value(&result)
+        .map_err(|e| JsValue::from_str(&format!("Serialize error: {}", e)))
 }
 
 /// Block attestation info from JavaScript
 #[derive(Serialize, Deserialize)]
 pub struct WasmBlockAttestation {
-    pub tx_hash: String,           // hex
-    pub block_hash: String,        // hex
+    pub tx_hash: String,    // hex
+    pub block_hash: String, // hex
     pub daa_score: u64,
     pub blue_score: u64,
-    pub timestamp: u64,            // Unix milliseconds
-    pub blue_work: String,         // hex
+    pub timestamp: u64,             // Unix milliseconds
+    pub blue_work: String,          // hex
     pub parent_hashes: Vec<String>, // hex array
 }
 
@@ -1055,30 +1065,38 @@ pub fn create_submit_tx_rpc_request(signed_tx_json: &str) -> Result<String, JsVa
 
     let rpc_tx = RpcTransaction {
         version: tx.version,
-        inputs: tx.inputs.iter().map(|inp| RpcInput {
-            previous_outpoint: RpcOutpoint {
-                transaction_id: hex::encode(inp.previous_outpoint_hash),
-                index: inp.previous_outpoint_index,
-            },
-            signature_script: hex::encode(&inp.signature_script),
-            // Assumed constant: the WASM Transaction type has no per-input
-            // sequence/sig_op_count. Kept identical to the sighash builder
-            // (build_sighash_transaction) and the txid computation
-            // (compute_transaction_id / ASSUMED_INPUT_SEQUENCE) so signing,
-            // submission, and the txid all agree.
-            sequence: u64::MAX,
-            sig_op_count: 1, // P2PK single-signature input
-        }).collect(),
-        outputs: tx.outputs.iter().map(|out| {
-            // ScriptPublicKey is encoded as: version (2 bytes BE) + script
-            let mut spk_bytes = Vec::with_capacity(2 + out.script_public_key.script.len());
-            spk_bytes.extend_from_slice(&out.script_public_key.version.to_be_bytes());
-            spk_bytes.extend_from_slice(&out.script_public_key.script);
-            RpcOutput {
-                value: out.amount,
-                script_public_key: hex::encode(spk_bytes),
-            }
-        }).collect(),
+        inputs: tx
+            .inputs
+            .iter()
+            .map(|inp| RpcInput {
+                previous_outpoint: RpcOutpoint {
+                    transaction_id: hex::encode(inp.previous_outpoint_hash),
+                    index: inp.previous_outpoint_index,
+                },
+                signature_script: hex::encode(&inp.signature_script),
+                // Assumed constant: the WASM Transaction type has no per-input
+                // sequence/sig_op_count. Kept identical to the sighash builder
+                // (build_sighash_transaction) and the txid computation
+                // (compute_transaction_id / ASSUMED_INPUT_SEQUENCE) so signing,
+                // submission, and the txid all agree.
+                sequence: u64::MAX,
+                sig_op_count: 1, // P2PK single-signature input
+            })
+            .collect(),
+        outputs: tx
+            .outputs
+            .iter()
+            .map(|out| {
+                // ScriptPublicKey is encoded as: version (2 bytes BE) + script
+                let mut spk_bytes = Vec::with_capacity(2 + out.script_public_key.script.len());
+                spk_bytes.extend_from_slice(&out.script_public_key.version.to_be_bytes());
+                spk_bytes.extend_from_slice(&out.script_public_key.script);
+                RpcOutput {
+                    value: out.amount,
+                    script_public_key: hex::encode(spk_bytes),
+                }
+            })
+            .collect(),
         lock_time: tx.lock_time,
         subnetwork_id: hex::encode(tx.subnetwork_id),
         gas: tx.gas,
@@ -1182,10 +1200,17 @@ mod tests {
     // KTCS actually submits).
     // -------------------------------------------------------------------------
 
-    fn tx_output(value: u64, spk_version: u16, script: Vec<u8>) -> ktcs_core::kaspa_types::TransactionOutput {
+    fn tx_output(
+        value: u64,
+        spk_version: u16,
+        script: Vec<u8>,
+    ) -> ktcs_core::kaspa_types::TransactionOutput {
         ktcs_core::kaspa_types::TransactionOutput {
             amount: value,
-            script_public_key: ScriptPublicKey { version: spk_version, script },
+            script_public_key: ScriptPublicKey {
+                version: spk_version,
+                script,
+            },
         }
     }
 
@@ -1266,6 +1291,9 @@ mod tests {
         base.inputs[0].signature_script = vec![0xde, 0xad, 0xbe, 0xef, 0x41, 0x42];
         let id_signed = compute_transaction_id(&base);
 
-        assert_eq!(id_unsigned, id_signed, "signature script must not affect txid");
+        assert_eq!(
+            id_unsigned, id_signed,
+            "signature script must not affect txid"
+        );
     }
 }

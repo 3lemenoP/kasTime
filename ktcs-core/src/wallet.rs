@@ -228,7 +228,6 @@ impl KaspaWallet {
 
         Ok(secp.verify_schnorr(&sig, &message, public_key).is_ok())
     }
-
 }
 
 /// Encode a public key as a Kaspa address.
@@ -982,8 +981,7 @@ mod tests {
 
         let addr = encode_address(&pk, "mainnet").unwrap();
         assert_eq!(
-            addr,
-            "kaspa:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jyqh70xmfj",
+            addr, "kaspa:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jyqh70xmfj",
             "KTCS encode_address diverged from rusty-kaspa mainnet PubKey vector"
         );
 
@@ -1004,10 +1002,9 @@ mod tests {
     #[test]
     fn kat_decode_address_cross_verified() {
         // mainnet, all-zero PubKey payload
-        let (hrp, payload) = decode_address(
-            "kaspa:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkx9awp4e",
-        )
-        .unwrap();
+        let (hrp, payload) =
+            decode_address("kaspa:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkx9awp4e")
+                .unwrap();
         assert_eq!(hrp, "kaspa");
         assert_eq!(payload, vec![0u8; 32]);
 
@@ -1020,10 +1017,9 @@ mod tests {
         assert_eq!(payload, vec![0u8; 32]);
 
         // mainnet, real x-only pubkey payload
-        let (hrp, payload) = decode_address(
-            "kaspa:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jyqh70xmfj",
-        )
-        .unwrap();
+        let (hrp, payload) =
+            decode_address("kaspa:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jyqh70xmfj")
+                .unwrap();
         assert_eq!(hrp, "kaspa");
         assert_eq!(
             hex::encode(payload),
@@ -1046,7 +1042,11 @@ mod tests {
             let addr = encode_address(&pk, network).unwrap();
             let (hrp, decoded) = decode_address(&addr).unwrap();
             assert_eq!(hrp, expected_prefix);
-            assert_eq!(decoded, payload, "round-trip payload mismatch on {}", network);
+            assert_eq!(
+                decoded, payload,
+                "round-trip payload mismatch on {}",
+                network
+            );
             // Re-encoding must be idempotent: the decoded payload IS the pubkey.
             let re_pk = XOnlyPublicKey::from_slice(&decoded).unwrap();
             assert_eq!(encode_address(&re_pk, network).unwrap(), addr);

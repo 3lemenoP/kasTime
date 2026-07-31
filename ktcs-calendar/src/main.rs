@@ -14,16 +14,17 @@ use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
+use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
 use tower::ServiceBuilder;
-use tower_governor::{governor::GovernorConfigBuilder, key_extractor::{KeyExtractor, PeerIpKeyExtractor}, GovernorError, GovernorLayer};
-use tower_http::{
-    cors::CorsLayer,
-    limit::RequestBodyLimitLayer,
+use tower_governor::{
+    governor::GovernorConfigBuilder,
+    key_extractor::{KeyExtractor, PeerIpKeyExtractor},
+    GovernorError, GovernorLayer,
 };
-use tracing::{info, warn, error};
+use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
-use subtle::ConstantTimeEq;
 
 mod routes;
 mod services;
@@ -277,9 +278,10 @@ impl ServerConfig {
     fn validate(&self) -> Result<(), ConfigError> {
         // Validate bind address
         if self.bind_address.parse::<SocketAddr>().is_err() {
-            return Err(ConfigError::Invalid(
-                format!("Invalid bind address '{}': must be in format IP:PORT", self.bind_address)
-            ));
+            return Err(ConfigError::Invalid(format!(
+                "Invalid bind address '{}': must be in format IP:PORT",
+                self.bind_address
+            )));
         }
 
         // Validate CORS origins
@@ -287,9 +289,10 @@ impl ServerConfig {
             if origin != "*" {
                 // Basic URL validation - must be http:// or https://
                 if !origin.starts_with("http://") && !origin.starts_with("https://") {
-                    return Err(ConfigError::Invalid(
-                        format!("Invalid CORS origin '{}': must start with http:// or https://", origin)
-                    ));
+                    return Err(ConfigError::Invalid(format!(
+                        "Invalid CORS origin '{}': must start with http:// or https://",
+                        origin
+                    )));
                 }
             }
         }
@@ -297,47 +300,51 @@ impl ServerConfig {
         // Validate rate limits
         if self.rate_limit_per_second == 0 {
             return Err(ConfigError::Invalid(
-                "Rate limit per second must be greater than 0".to_string()
+                "Rate limit per second must be greater than 0".to_string(),
             ));
         }
         if self.rate_limit_per_second > 10_000 {
-            return Err(ConfigError::Invalid(
-                format!("Rate limit {} per second seems too high (maximum 10000)", self.rate_limit_per_second)
-            ));
+            return Err(ConfigError::Invalid(format!(
+                "Rate limit {} per second seems too high (maximum 10000)",
+                self.rate_limit_per_second
+            )));
         }
         if self.rate_limit_burst == 0 {
             return Err(ConfigError::Invalid(
-                "Rate limit burst must be greater than 0".to_string()
+                "Rate limit burst must be greater than 0".to_string(),
             ));
         }
         if self.rate_limit_burst > 100_000 {
-            return Err(ConfigError::Invalid(
-                format!("Rate limit burst {} seems too high (maximum 100000)", self.rate_limit_burst)
-            ));
+            return Err(ConfigError::Invalid(format!(
+                "Rate limit burst {} seems too high (maximum 100000)",
+                self.rate_limit_burst
+            )));
         }
 
         // Validate max body size (reasonable range: 1KB to 100MB)
         if self.max_body_size < 1024 {
-            return Err(ConfigError::Invalid(
-                format!("Max body size {} is too small (minimum 1024 bytes)", self.max_body_size)
-            ));
+            return Err(ConfigError::Invalid(format!(
+                "Max body size {} is too small (minimum 1024 bytes)",
+                self.max_body_size
+            )));
         }
         if self.max_body_size > 100 * 1024 * 1024 {
-            return Err(ConfigError::Invalid(
-                format!("Max body size {} is too large (maximum 100MB)", self.max_body_size)
-            ));
+            return Err(ConfigError::Invalid(format!(
+                "Max body size {} is too large (maximum 100MB)",
+                self.max_body_size
+            )));
         }
 
         // Validate API key if required
         if self.require_api_key && self.api_key.is_none() {
             return Err(ConfigError::Invalid(
-                "REQUIRE_API_KEY is true but no API_KEY is set".to_string()
+                "REQUIRE_API_KEY is true but no API_KEY is set".to_string(),
             ));
         }
         if let Some(ref key) = self.api_key {
             if key.len() < 16 {
                 return Err(ConfigError::Invalid(
-                    "API key is too short (minimum 16 characters for security)".to_string()
+                    "API key is too short (minimum 16 characters for security)".to_string(),
                 ));
             }
         }
@@ -351,7 +358,8 @@ impl ServerConfig {
             if env == "production" {
                 return Err(ConfigError::Invalid(
                     "SECURITY ERROR: API key authentication must be enabled in production. \
-                     Set REQUIRE_API_KEY=true and provide API_KEY.".to_string()
+                     Set REQUIRE_API_KEY=true and provide API_KEY."
+                        .to_string(),
                 ));
             } else {
                 warn!(
@@ -371,8 +379,7 @@ impl ServerConfig {
 
     fn from_env() -> Self {
         // Parse CORS origins
-        let cors_origins_str = std::env::var("CORS_ORIGINS")
-            .unwrap_or_else(|_| "*".to_string());
+        let cors_origins_str = std::env::var("CORS_ORIGINS").unwrap_or_else(|_| "*".to_string());
         let cors_origins: Vec<String> = if cors_origins_str == "*" {
             vec!["*".to_string()]
         } else {
@@ -383,12 +390,12 @@ impl ServerConfig {
                 .collect()
         };
 
-        let bind_address = std::env::var("BIND_ADDRESS")
-            .unwrap_or_else(|_| "0.0.0.0:3001".to_string());
+        let bind_address =
+            std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:3001".to_string());
 
         // Public URL defaults to http://{bind_address}
-        let public_url = std::env::var("KTCS_PUBLIC_URL")
-            .unwrap_or_else(|_| format!("http://{}", bind_address));
+        let public_url =
+            std::env::var("KTCS_PUBLIC_URL").unwrap_or_else(|_| format!("http://{}", bind_address));
 
         Self {
             bind_address,
@@ -426,10 +433,8 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
         CorsLayer::permissive()
     } else {
         info!("CORS configured for origins: {:?}", origins);
-        let allowed_origins: Vec<HeaderValue> = origins
-            .iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
+        let allowed_origins: Vec<HeaderValue> =
+            origins.iter().filter_map(|o| o.parse().ok()).collect();
 
         CorsLayer::new()
             .allow_origin(allowed_origins)
@@ -503,9 +508,7 @@ async fn main() {
     // back to a sane default when it is unset or unparseable.
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,ktcs_calendar=info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     // Load environment variables
     dotenvy::dotenv().ok();
@@ -519,11 +522,13 @@ async fn main() {
     info!("Server configuration validated successfully");
 
     // Initialize Kaspa service
-    let kaspa_config = KaspaServiceConfig::from_env()
-        .unwrap_or_else(|e| {
-            warn!("Failed to load Kaspa config from env: {}. Using defaults.", e);
-            KaspaServiceConfig::default()
-        });
+    let kaspa_config = KaspaServiceConfig::from_env().unwrap_or_else(|e| {
+        warn!(
+            "Failed to load Kaspa config from env: {}. Using defaults.",
+            e
+        );
+        KaspaServiceConfig::default()
+    });
 
     // Validate Kaspa configuration
     if let Err(e) = kaspa_config.validate() {
@@ -575,7 +580,10 @@ async fn main() {
     // in-flight stamps are re-batched instead of being orphaned forever.
     let batch_manager = Arc::new(BatchManager::new());
     match recover_pending_stamps(&database, &batch_manager).await {
-        Ok(n) if n > 0 => info!("Crash recovery: requeued {} pending stamp(s) into the batch manager", n),
+        Ok(n) if n > 0 => info!(
+            "Crash recovery: requeued {} pending stamp(s) into the batch manager",
+            n
+        ),
         Ok(_) => info!("Crash recovery: no pending stamps to requeue"),
         Err(e) => warn!("Crash recovery failed to reload pending stamps: {}", e),
     }
@@ -683,7 +691,9 @@ async fn main() {
     }
 
     // Configure rate limiting with proxy-aware IP extraction
-    let key_extractor = ProxyAwareIpExtractor { trust_proxy: server_config.trust_proxy };
+    let key_extractor = ProxyAwareIpExtractor {
+        trust_proxy: server_config.trust_proxy,
+    };
     if server_config.trust_proxy {
         info!("Rate limiter configured to trust X-Forwarded-For/X-Real-IP headers");
     }
@@ -693,7 +703,7 @@ async fn main() {
             .burst_size(server_config.rate_limit_burst)
             .key_extractor(key_extractor)
             .finish()
-            .expect("Failed to create rate limiter config")
+            .expect("Failed to create rate limiter config"),
     );
 
     // Build CORS layer
@@ -709,7 +719,10 @@ async fn main() {
     // WS behind the key previously made a working public frontend impossible.
     let write_routes = Router::new()
         .route("/stamp", post(submit_stamp))
-        .route_layer(middleware::from_fn_with_state(state.clone(), api_key_middleware));
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            api_key_middleware,
+        ));
 
     let public_v1_routes = Router::new()
         .route("/stamp/:id", get(get_stamp))
@@ -721,39 +734,53 @@ async fn main() {
     // Build router with security layers
     // CORS must be applied LAST (outermost) so it adds headers to ALL responses including rate-limited 429s
     let app = Router::new()
-        .route("/health", get(health_check))  // Health check without auth
+        .route("/health", get(health_check)) // Health check without auth
         .nest("/v1", v1_routes)
-        .layer(ServiceBuilder::new()
-            // Body size limit
-            .layer(RequestBodyLimitLayer::new(server_config.max_body_size))
-            // Rate limiting
-            .layer(GovernorLayer {
-                config: governor_conf,
-            })
+        .layer(
+            ServiceBuilder::new()
+                // Body size limit
+                .layer(RequestBodyLimitLayer::new(server_config.max_body_size))
+                // Rate limiting
+                .layer(GovernorLayer {
+                    config: governor_conf,
+                }),
         )
         // CORS applied after ServiceBuilder - outermost layer
         .layer(cors_layer)
         .with_state(state.clone());
 
-    info!("KTCS Calendar Server starting on {}", server_config.bind_address);
+    info!(
+        "KTCS Calendar Server starting on {}",
+        server_config.bind_address
+    );
     info!("Security configuration:");
     info!("  CORS origins: {:?}", server_config.cors_origins);
-    info!("  Rate limit: {}/s (burst: {})", server_config.rate_limit_per_second, server_config.rate_limit_burst);
+    info!(
+        "  Rate limit: {}/s (burst: {})",
+        server_config.rate_limit_per_second, server_config.rate_limit_burst
+    );
     info!("  Max body size: {} bytes", server_config.max_body_size);
     info!("  API key required: {}", api_key.is_some());
 
     // Log wallet configuration
     if state.kaspa_service.is_recycling_enabled() {
         info!("Wallet configuration (dual-wallet recycling ENABLED):");
-        info!("  STAMP wallet: {}", state.kaspa_service.config().wallet_address);
+        info!(
+            "  STAMP wallet: {}",
+            state.kaspa_service.config().wallet_address
+        );
         if let Some(return_wallet) = state.kaspa_service.return_wallet() {
             info!("  RETURN wallet: {}", return_wallet.address());
         }
-        info!("  Recycle threshold: {} sompi ({:.2} KAS)",
+        info!(
+            "  Recycle threshold: {} sompi ({:.2} KAS)",
             state.kaspa_service.recycle_threshold(),
             state.kaspa_service.recycle_threshold() as f64 / 100_000_000.0
         );
-        info!("  Recycle poll interval: {}s", state.kaspa_service.config().recycle_poll_interval_secs);
+        info!(
+            "  Recycle poll interval: {}s",
+            state.kaspa_service.config().recycle_poll_interval_secs
+        );
     } else {
         info!("Wallet configuration (single wallet mode):");
         info!("  Wallet: {}", state.kaspa_service.config().wallet_address);
@@ -777,37 +804,36 @@ async fn main() {
     // Run server with graceful shutdown
     // Use into_make_service_with_connect_info to enable PeerIpKeyExtractor for rate limiting
     let app = app.into_make_service_with_connect_info::<SocketAddr>();
-    let server = axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            // Wait for EITHER SIGINT (Ctrl+C) OR SIGTERM. systemd stops services
-            // with SIGTERM, so listening only for Ctrl+C (SIGINT) meant every
-            // `systemctl stop/restart` skipped this drain path and hard-killed the
-            // process, stranding in-flight stamps.
-            #[cfg(unix)]
-            {
-                use tokio::signal::unix::{signal, SignalKind};
-                let mut sigterm =
-                    signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => info!("SIGINT received"),
-                    _ = sigterm.recv() => info!("SIGTERM received"),
-                }
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        // Wait for EITHER SIGINT (Ctrl+C) OR SIGTERM. systemd stops services
+        // with SIGTERM, so listening only for Ctrl+C (SIGINT) meant every
+        // `systemctl stop/restart` skipped this drain path and hard-killed the
+        // process, stranding in-flight stamps.
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => info!("SIGINT received"),
+                _ = sigterm.recv() => info!("SIGTERM received"),
             }
-            #[cfg(not(unix))]
-            {
-                tokio::signal::ctrl_c()
-                    .await
-                    .expect("Failed to install Ctrl+C handler");
-            }
-            info!("Shutdown signal received, draining requests...");
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+        }
+        info!("Shutdown signal received, draining requests...");
 
-            // Signal batch processor to shut down
-            let _ = shutdown_tx.send(());
+        // Signal batch processor to shut down
+        let _ = shutdown_tx.send(());
 
-            // Give some time for graceful cleanup
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            info!("Graceful shutdown complete");
-        });
+        // Give some time for graceful cleanup
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        info!("Graceful shutdown complete");
+    });
 
     if let Err(e) = server.await {
         error!("Server error: {}", e);
@@ -817,7 +843,9 @@ async fn main() {
 
 /// Health check endpoint
 async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
-    let pending = state.database.count_by_status(DbStampStatus::Pending)
+    let pending = state
+        .database
+        .count_by_status(DbStampStatus::Pending)
         .await
         .unwrap_or(0) as usize;
 
@@ -837,18 +865,29 @@ async fn submit_stamp(
     if req.algorithm != "sha256" {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Unsupported algorithm: '{}'. Only 'sha256' is supported.", req.algorithm),
+            format!(
+                "Unsupported algorithm: '{}'. Only 'sha256' is supported.",
+                req.algorithm
+            ),
         ));
     }
 
     // Parse and validate digest
-    let digest_bytes = hex::decode(&req.digest)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid digest hex: {}", e)))?;
+    let digest_bytes = hex::decode(&req.digest).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid digest hex: {}", e),
+        )
+    })?;
 
     if digest_bytes.len() != 32 {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Invalid digest length for {}: expected 32 bytes, got {}", req.algorithm, digest_bytes.len()),
+            format!(
+                "Invalid digest length for {}: expected 32 bytes, got {}",
+                req.algorithm,
+                digest_bytes.len()
+            ),
         ));
     }
 
@@ -856,7 +895,10 @@ async fn submit_stamp(
     digest.copy_from_slice(&digest_bytes);
 
     // Generate ID
-    let id = format!("ktcs_{}", &uuid::Uuid::new_v4().to_string().replace("-", "")[..16]);
+    let id = format!(
+        "ktcs_{}",
+        &uuid::Uuid::new_v4().to_string().replace("-", "")[..16]
+    );
 
     // Get current timestamp
     let now = std::time::SystemTime::now()
@@ -885,14 +927,20 @@ async fn submit_stamp(
         proof: Some(serialize_proof(&proof)),
         batch_mode: format!("{:?}", req.batch_mode),
     };
-    state.database.save_stamp(&db_record).await
-        .map_err(|e| {
-            error!("Database error saving stamp: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
-        })?;
+    state.database.save_stamp(&db_record).await.map_err(|e| {
+        error!("Database error saving stamp: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )
+    })?;
 
     // Add to batch manager (may fail if pending limit exceeded)
-    if !state.batch_manager.add_digest(id.clone(), digest, req.batch_mode).await {
+    if !state
+        .batch_manager
+        .add_digest(id.clone(), digest, req.batch_mode)
+        .await
+    {
         // Clean up the database record we just saved
         if let Err(e) = state.database.delete_stamp(&id).await {
             error!("Failed to clean up stamp after batch limit exceeded: {}", e);
@@ -932,10 +980,16 @@ async fn get_stamp(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<StampResponse>, (StatusCode, String)> {
-    let db_record = state.database.get_stamp(&id).await
+    let db_record = state
+        .database
+        .get_stamp(&id)
+        .await
         .map_err(|e| {
             error!("Database error fetching stamp: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
         })?
         .ok_or((StatusCode::NOT_FOUND, format!("Stamp not found: {}", id)))?;
 
@@ -975,15 +1029,19 @@ async fn get_stamp(
         },
         DbStampStatus::Confirmed => {
             // Deserialize the proof from database
-            let proof_bytes = db_record.proof.as_ref()
-                .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Confirmed stamp missing proof".to_string()))?;
-            let proof = ktcs_core::deserialize_proof(proof_bytes)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid proof data: {}", e)))?;
+            let proof_bytes = db_record.proof.as_ref().ok_or((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Confirmed stamp missing proof".to_string(),
+            ))?;
+            let proof = ktcs_core::deserialize_proof(proof_bytes).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Invalid proof data: {}", e),
+                )
+            })?;
 
-            let proof_base64 = base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                proof_bytes,
-            );
+            let proof_base64 =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, proof_bytes);
 
             // Get attestation data
             let ka = proof.kaspa_attestations().next();
@@ -1039,8 +1097,12 @@ async fn verify_proof(
     let proof = ktcs_core::deserialize_proof(&body)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid proof: {}", e)))?;
 
-    let result = ktcs_core::verify_proof(&proof, None)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Verification error: {}", e)))?;
+    let result = ktcs_core::verify_proof(&proof, None).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Verification error: {}", e),
+        )
+    })?;
 
     // Convert attestations to the response format
     let attestations: Vec<AttestationInfoResponse> = result
@@ -1072,14 +1134,16 @@ async fn verify_proof(
                     timestamp: None,
                     thermodynamic_weight: None,
                 },
-                ktcs_core::verify::AttestationDetails::Bitcoin { block_height } => AttestationInfoResponse {
-                    attestation_type: "bitcoin".to_string(),
-                    daa_score: Some(*block_height as u64),
-                    blue_score: None,
-                    block_hash: None,
-                    timestamp: None,
-                    thermodynamic_weight: None,
-                },
+                ktcs_core::verify::AttestationDetails::Bitcoin { block_height } => {
+                    AttestationInfoResponse {
+                        attestation_type: "bitcoin".to_string(),
+                        daa_score: Some(*block_height as u64),
+                        blue_score: None,
+                        block_hash: None,
+                        timestamp: None,
+                        thermodynamic_weight: None,
+                    }
+                }
             }
         })
         .collect();
@@ -1229,7 +1293,11 @@ async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receive
                             .update_stamp_status(&pending.id, DbStampStatus::Batched, None)
                             .await
                         {
-                            tracing::error!("Failed to mark stamp {} as batched: {}", pending.id, e);
+                            tracing::error!(
+                                "Failed to mark stamp {} as batched: {}",
+                                pending.id,
+                                e
+                            );
                         }
                         state.ws_state.broadcast_batched(BatchedEvent {
                             proof_id: pending.id.clone(),
@@ -1244,14 +1312,19 @@ async fn batch_processing_loop(state: AppState, mut shutdown: broadcast::Receive
                     // Requeue stamps for retry instead of discarding
                     let mut requeued = 0;
                     for stamp in &stamps {
-                        if state.batch_manager.add_digest(stamp.id.clone(), stamp.digest, mode).await {
+                        if state
+                            .batch_manager
+                            .add_digest(stamp.id.clone(), stamp.digest, mode)
+                            .await
+                        {
                             requeued += 1;
                         }
                     }
                     if requeued < stamps.len() {
                         tracing::warn!(
                             "Could not requeue all stamps: {} of {} (pending limit reached)",
-                            requeued, stamps.len()
+                            requeued,
+                            stamps.len()
                         );
                     } else {
                         tracing::info!("Requeued {} stamps for retry", requeued);
@@ -1357,7 +1430,10 @@ fn parse_batch_mode(s: &str) -> BatchMode {
         "economic" => BatchMode::Economic,
         "standard" => BatchMode::Standard,
         other => {
-            warn!("Unknown batch_mode '{}' during recovery, defaulting to standard", other);
+            warn!(
+                "Unknown batch_mode '{}' during recovery, defaulting to standard",
+                other
+            );
             BatchMode::Standard
         }
     }
@@ -1376,7 +1452,9 @@ async fn recover_pending_stamps(
     database: &Database,
     batch_manager: &BatchManager,
 ) -> std::result::Result<usize, services::database::DatabaseError> {
-    let pending = database.get_stamps_by_status(DbStampStatus::Pending).await?;
+    let pending = database
+        .get_stamps_by_status(DbStampStatus::Pending)
+        .await?;
     let mut requeued = 0usize;
     for record in pending {
         let mode = parse_batch_mode(&record.batch_mode);
@@ -1396,7 +1474,7 @@ async fn recover_pending_stamps(
 }
 
 fn format_timestamp(ms: u64) -> String {
-    use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+    use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
     let secs = (ms / 1000) as i64;
     let nanos = ((ms % 1000) * 1_000_000) as u32;
@@ -1423,11 +1501,14 @@ mod tests {
             mock_mode: true,
             ..Default::default()
         };
-        let kaspa_service = Arc::new(KaspaService::new(kaspa_config).expect("Failed to create test Kaspa service"));
+        let kaspa_service =
+            Arc::new(KaspaService::new(kaspa_config).expect("Failed to create test Kaspa service"));
 
         // Use in-memory database for tests
         let database = Arc::new(
-            Database::in_memory().await.expect("Failed to create test database")
+            Database::in_memory()
+                .await
+                .expect("Failed to create test database"),
         );
 
         AppState {
@@ -1436,7 +1517,7 @@ mod tests {
             kaspa_service,
             ws_state: Arc::new(WsState::new()),
             public_url: "http://localhost:3001".to_string(),
-            api_key: None, // No API key for tests
+            api_key: None,                       // No API key for tests
             cors_origins: vec!["*".to_string()], // Allow all origins in tests
             trust_proxy: false,
         }
@@ -1457,7 +1538,10 @@ mod tests {
     fn create_test_router_with_auth(state: AppState) -> Router {
         let write_routes = Router::new()
             .route("/stamp", post(submit_stamp))
-            .route_layer(middleware::from_fn_with_state(state.clone(), api_key_middleware));
+            .route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                api_key_middleware,
+            ));
         let public_v1 = Router::new()
             .route("/stamp/:id", get(get_stamp))
             .route("/verify", post(verify_proof));
@@ -1605,7 +1689,11 @@ mod tests {
                     let merkle_root = tree.root();
 
                     // Submit to mock Kaspa
-                    let submission = batch_state.kaspa_service.submit_commitment(merkle_root).await.unwrap();
+                    let submission = batch_state
+                        .kaspa_service
+                        .submit_commitment(merkle_root)
+                        .await
+                        .unwrap();
 
                     // Build attestation
                     let attestation = KaspaAttestation::new(
@@ -1706,22 +1794,26 @@ mod tests {
 
         // Step 4: Verify the proof
         let proof_base64 = json["proof"].as_str().unwrap();
-        let proof_bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            proof_base64,
-        ).unwrap();
+        let proof_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, proof_base64)
+                .unwrap();
 
         // Deserialize and verify
         let proof = ktcs_core::deserialize_proof(&proof_bytes).unwrap();
         let verification = ktcs_core::verify_proof(&proof, None).unwrap();
 
-        assert!(verification.valid, "Proof verification failed: {:?}", verification.error);
+        assert!(
+            verification.valid,
+            "Proof verification failed: {:?}",
+            verification.error
+        );
         assert_eq!(verification.digest, digest);
         assert!(!verification.attestations.is_empty());
 
         // Check attestation details
         let attestation = &verification.attestations[0];
-        if let ktcs_core::verify::AttestationDetails::Kaspa { daa_score, .. } = &attestation.details {
+        if let ktcs_core::verify::AttestationDetails::Kaspa { daa_score, .. } = &attestation.details
+        {
             assert!(*daa_score > 42_000_000); // Mock mode DAA score base
         } else {
             panic!("Expected Kaspa attestation");
@@ -1751,7 +1843,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "write must require key");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "write must require key"
+        );
 
         // POST /v1/stamp WITH correct key -> 200
         let resp = app
@@ -1780,7 +1876,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "reads must be public");
+        assert_ne!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "reads must be public"
+        );
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
         // POST /v1/verify WITHOUT key -> public (400 for a garbage proof, never 401)
@@ -1795,11 +1895,20 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "verify must be public");
+        assert_ne!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "verify must be public"
+        );
 
         // GET /health -> public
         let resp = app
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);

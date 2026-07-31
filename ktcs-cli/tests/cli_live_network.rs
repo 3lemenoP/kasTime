@@ -233,7 +233,15 @@ fn test_stamp_direct_creates_complete_proof() {
 
     // Create a temp file to stamp
     let mut file = NamedTempFile::new().unwrap();
-    writeln!(file, "test content for direct stamping {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()).unwrap();
+    writeln!(
+        file,
+        "test content for direct stamping {}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    )
+    .unwrap();
     file.flush().unwrap();
 
     let output_file = NamedTempFile::new().unwrap();
@@ -340,7 +348,9 @@ fn test_full_direct_stamp_and_verify_workflow() {
         .unwrap();
 
     assert!(hash_output.status.success());
-    let file_hash = String::from_utf8_lossy(&hash_output.stdout).trim().to_string();
+    let file_hash = String::from_utf8_lossy(&hash_output.stdout)
+        .trim()
+        .to_string();
     println!("File hash: {}", file_hash);
 
     // Step 3: Direct stamp

@@ -153,7 +153,11 @@ impl WsState {
             if *count == 0 {
                 connections.remove(&ip);
             }
-            debug!("IP {} now has {} connections", ip, connections.get(&ip).unwrap_or(&0));
+            debug!(
+                "IP {} now has {} connections",
+                ip,
+                connections.get(&ip).unwrap_or(&0)
+            );
         }
     }
 
@@ -173,7 +177,10 @@ impl WsState {
     async fn subscribe(&self, session_id: u64, proof_id: &str) -> bool {
         // Validate proof_id format first (no locks needed)
         if proof_id.is_empty() || proof_id.len() > 64 {
-            warn!("Session {} tried to subscribe to invalid proof_id", session_id);
+            warn!(
+                "Session {} tried to subscribe to invalid proof_id",
+                session_id
+            );
             return false;
         }
 
@@ -299,10 +306,8 @@ fn confirmed_message_from_record(record: &DbStampRecord) -> Option<ServerMessage
     let proof_bytes = record.proof.as_ref()?;
     let proof = ktcs_core::deserialize_proof(proof_bytes).ok()?;
     let att = proof.kaspa_attestations().next()?;
-    let proof_base64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        proof_bytes,
-    );
+    let proof_base64 =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, proof_bytes);
     Some(ServerMessage::Confirmed {
         proof_id: record.id.clone(),
         block_hash: hex::encode(att.block_hash),
@@ -368,19 +373,34 @@ pub async fn ws_handler<S: WsAppState + HasAllowedOrigins + HasProxyConfig + Has
 
     // Check per-IP connection limit
     if !state.ws_state().track_connection(ip).await {
-        warn!("WebSocket connection rejected: too many connections from {}", ip);
-        return (StatusCode::TOO_MANY_REQUESTS, "Too many connections from this IP").into_response();
+        warn!(
+            "WebSocket connection rejected: too many connections from {}",
+            ip
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many connections from this IP",
+        )
+            .into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, ip)).into_response()
+    ws.on_upgrade(move |socket| handle_socket(socket, state, ip))
+        .into_response()
 }
 
 /// Handle a WebSocket connection
-async fn handle_socket<S: WsAppState + HasDatabase>(socket: WebSocket, state: S, client_ip: IpAddr) {
+async fn handle_socket<S: WsAppState + HasDatabase>(
+    socket: WebSocket,
+    state: S,
+    client_ip: IpAddr,
+) {
     let ws_state = state.ws_state();
     let session_id = ws_state.allocate_session_id().await;
 
-    info!("WebSocket connection {} established from {}", session_id, client_ip);
+    info!(
+        "WebSocket connection {} established from {}",
+        session_id, client_ip
+    );
 
     let (mut sender, mut receiver) = socket.split();
 
@@ -539,22 +559,23 @@ async fn handle_socket<S: WsAppState + HasDatabase>(socket: WebSocket, state: S,
         message_count += 1;
         if message_count > MAX_MESSAGES_PER_SECOND {
             warn!("Session {} rate limit exceeded", session_id);
-            let _ = tx.send(ServerMessage::Error {
-                message: "Rate limit exceeded".to_string(),
-            }).await;
+            let _ = tx
+                .send(ServerMessage::Error {
+                    message: "Rate limit exceeded".to_string(),
+                })
+                .await;
             break; // Close connection
         }
 
         match result {
-            Ok(Message::Text(text)) => {
-                match serde_json::from_str::<ClientMessage>(&text) {
-                    Ok(msg) => match msg {
-                        ClientMessage::Subscribe { proof_id } => {
-                            if ws_state.subscribe(session_id, &proof_id).await {
-                                session_subscriptions.write().await.insert(proof_id.clone());
-                                let _ = tx.send(ServerMessage::Subscribed { proof_id }).await;
-                            } else {
-                                let _ = tx
+            Ok(Message::Text(text)) => match serde_json::from_str::<ClientMessage>(&text) {
+                Ok(msg) => match msg {
+                    ClientMessage::Subscribe { proof_id } => {
+                        if ws_state.subscribe(session_id, &proof_id).await {
+                            session_subscriptions.write().await.insert(proof_id.clone());
+                            let _ = tx.send(ServerMessage::Subscribed { proof_id }).await;
+                        } else {
+                            let _ = tx
                                     .send(ServerMessage::Error {
                                         message: format!(
                                             "Subscription failed: limit exceeded ({} max) or invalid proof_id",
@@ -562,26 +583,25 @@ async fn handle_socket<S: WsAppState + HasDatabase>(socket: WebSocket, state: S,
                                         ),
                                     })
                                     .await;
-                            }
                         }
-                        ClientMessage::Unsubscribe { proof_id } => {
-                            ws_state.unsubscribe(session_id, &proof_id).await;
-                            session_subscriptions.write().await.remove(&proof_id);
-                            let _ = tx.send(ServerMessage::Unsubscribed { proof_id }).await;
-                        }
-                        ClientMessage::Ping => {
-                            let _ = tx.send(ServerMessage::Pong).await;
-                        }
-                    },
-                    Err(e) => {
-                        let _ = tx
-                            .send(ServerMessage::Error {
-                                message: format!("Invalid message: {}", e),
-                            })
-                            .await;
                     }
+                    ClientMessage::Unsubscribe { proof_id } => {
+                        ws_state.unsubscribe(session_id, &proof_id).await;
+                        session_subscriptions.write().await.remove(&proof_id);
+                        let _ = tx.send(ServerMessage::Unsubscribed { proof_id }).await;
+                    }
+                    ClientMessage::Ping => {
+                        let _ = tx.send(ServerMessage::Pong).await;
+                    }
+                },
+                Err(e) => {
+                    let _ = tx
+                        .send(ServerMessage::Error {
+                            message: format!("Invalid message: {}", e),
+                        })
+                        .await;
                 }
-            }
+            },
             Ok(Message::Close(_)) => {
                 break;
             }
@@ -609,7 +629,8 @@ async fn handle_socket<S: WsAppState + HasDatabase>(socket: WebSocket, state: S,
         let _ = send_task.await;
         let _ = confirm_task.await;
         let _ = batched_task.await;
-    }).await;
+    })
+    .await;
 
     debug!("WebSocket connection {} cleanup complete", session_id);
 }

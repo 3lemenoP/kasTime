@@ -109,9 +109,10 @@ pub fn deserialize_proof(data: &[u8]) -> Result<KtcsProof> {
             seen_attestation = true;
             // Security: Prevent DoS via excessive attestation count
             if attestations.len() > MAX_ATTESTATIONS {
-                return Err(KtcsError::InvalidData(
-                    format!("Too many attestations: max {}", MAX_ATTESTATIONS)
-                ));
+                return Err(KtcsError::InvalidData(format!(
+                    "Too many attestations: max {}",
+                    MAX_ATTESTATIONS
+                )));
             }
         } else {
             // It's an operation
@@ -126,9 +127,10 @@ pub fn deserialize_proof(data: &[u8]) -> Result<KtcsProof> {
             cursor = new_cursor;
             // Security: Prevent DoS via excessive operation count
             if operations.len() > MAX_OPERATIONS {
-                return Err(KtcsError::InvalidData(
-                    format!("Too many operations: max {}", MAX_OPERATIONS)
-                ));
+                return Err(KtcsError::InvalidData(format!(
+                    "Too many operations: max {}",
+                    MAX_OPERATIONS
+                )));
             }
         }
     }
@@ -187,9 +189,10 @@ fn deserialize_operation(data: &[u8], cursor: usize) -> Result<(Operation, usize
             pos = new_pos;
             // Security: Prevent DoS via excessive allocation
             if len > MAX_OPERATION_DATA_SIZE {
-                return Err(KtcsError::InvalidData(
-                    format!("Append operation data size {} exceeds maximum {}", len, MAX_OPERATION_DATA_SIZE)
-                ));
+                return Err(KtcsError::InvalidData(format!(
+                    "Append operation data size {} exceeds maximum {}",
+                    len, MAX_OPERATION_DATA_SIZE
+                )));
             }
             if data.len() < pos + len as usize {
                 return Err(KtcsError::UnexpectedEof);
@@ -203,9 +206,10 @@ fn deserialize_operation(data: &[u8], cursor: usize) -> Result<(Operation, usize
             pos = new_pos;
             // Security: Prevent DoS via excessive allocation
             if len > MAX_OPERATION_DATA_SIZE {
-                return Err(KtcsError::InvalidData(
-                    format!("Prepend operation data size {} exceeds maximum {}", len, MAX_OPERATION_DATA_SIZE)
-                ));
+                return Err(KtcsError::InvalidData(format!(
+                    "Prepend operation data size {} exceeds maximum {}",
+                    len, MAX_OPERATION_DATA_SIZE
+                )));
             }
             if data.len() < pos + len as usize {
                 return Err(KtcsError::UnexpectedEof);
@@ -274,119 +278,117 @@ fn deserialize_attestation(data: &[u8], cursor: usize) -> Result<(Attestation, u
     let tag = AttestationTag::try_from(data[cursor])?;
     let mut pos = cursor + 1;
 
-    let attestation = match tag {
-        AttestationTag::Pending => {
-            let (url_len, new_pos) = decode_varint(data, pos)?;
-            pos = new_pos;
-            // Security: Prevent DoS via excessive URL allocation
-            if url_len > MAX_URL_LENGTH {
-                return Err(KtcsError::InvalidData(
-                    format!("URL length {} exceeds maximum {}", url_len, MAX_URL_LENGTH)
-                ));
-            }
-            if data.len() < pos + url_len as usize {
-                return Err(KtcsError::UnexpectedEof);
-            }
-            let url = String::from_utf8(data[pos..pos + url_len as usize].to_vec())?;
-            pos += url_len as usize;
-            Attestation::Pending(PendingAttestation { calendar_url: url })
-        }
-        AttestationTag::KaspaBlock => {
-            // Need at least: version(1) + daa_score(8) + blue_score(8) + block_hash(32) +
-            // timestamp(8) + tx_hash(32) + tx_index(4) + blue_work(32) = 125 bytes
-            if data.len() < pos + 125 {
-                return Err(KtcsError::UnexpectedEof);
-            }
-
-            let version = data[pos];
-            pos += 1;
-
-            let daa_score = u64::from_le_bytes(
-                data[pos..pos + 8]
-                    .try_into()
-                    .map_err(|_| KtcsError::InvalidData("Invalid daa_score bytes".to_string()))?
-            );
-            pos += 8;
-
-            let blue_score = u64::from_le_bytes(
-                data[pos..pos + 8]
-                    .try_into()
-                    .map_err(|_| KtcsError::InvalidData("Invalid blue_score bytes".to_string()))?
-            );
-            pos += 8;
-
-            let mut block_hash = [0u8; 32];
-            block_hash.copy_from_slice(&data[pos..pos + 32]);
-            pos += 32;
-
-            let timestamp = u64::from_le_bytes(
-                data[pos..pos + 8]
-                    .try_into()
-                    .map_err(|_| KtcsError::InvalidData("Invalid timestamp bytes".to_string()))?
-            );
-            pos += 8;
-
-            let mut tx_hash = [0u8; 32];
-            tx_hash.copy_from_slice(&data[pos..pos + 32]);
-            pos += 32;
-
-            let tx_index = u32::from_le_bytes(
-                data[pos..pos + 4]
-                    .try_into()
-                    .map_err(|_| KtcsError::InvalidData("Invalid tx_index bytes".to_string()))?
-            );
-            pos += 4;
-
-            let mut blue_work = [0u8; 32];
-            blue_work.copy_from_slice(&data[pos..pos + 32]);
-            pos += 32;
-
-            let (parent_count, new_pos) = decode_varint(data, pos)?;
-            pos = new_pos;
-
-            // Security: Prevent DoS via excessive allocation
-            if parent_count > MAX_PARENT_HASHES {
-                return Err(KtcsError::InvalidData(
-                    format!("Parent count {} exceeds maximum {}", parent_count, MAX_PARENT_HASHES)
-                ));
-            }
-
-            let mut parent_hashes = Vec::with_capacity(parent_count as usize);
-            for _ in 0..parent_count {
-                if data.len() < pos + 32 {
+    let attestation =
+        match tag {
+            AttestationTag::Pending => {
+                let (url_len, new_pos) = decode_varint(data, pos)?;
+                pos = new_pos;
+                // Security: Prevent DoS via excessive URL allocation
+                if url_len > MAX_URL_LENGTH {
+                    return Err(KtcsError::InvalidData(format!(
+                        "URL length {} exceeds maximum {}",
+                        url_len, MAX_URL_LENGTH
+                    )));
+                }
+                if data.len() < pos + url_len as usize {
                     return Err(KtcsError::UnexpectedEof);
                 }
-                let mut parent = [0u8; 32];
-                parent.copy_from_slice(&data[pos..pos + 32]);
-                parent_hashes.push(parent);
-                pos += 32;
+                let url = String::from_utf8(data[pos..pos + url_len as usize].to_vec())?;
+                pos += url_len as usize;
+                Attestation::Pending(PendingAttestation { calendar_url: url })
             }
+            AttestationTag::KaspaBlock => {
+                // Need at least: version(1) + daa_score(8) + blue_score(8) + block_hash(32) +
+                // timestamp(8) + tx_hash(32) + tx_index(4) + blue_work(32) = 125 bytes
+                if data.len() < pos + 125 {
+                    return Err(KtcsError::UnexpectedEof);
+                }
 
-            Attestation::Kaspa(KaspaAttestation {
-                version,
-                daa_score,
-                blue_score,
-                block_hash,
-                timestamp,
-                tx_hash,
-                tx_index,
-                blue_work,
-                parent_hashes,
-            })
-        }
-        AttestationTag::Bitcoin => {
-            if data.len() < pos + 4 {
-                return Err(KtcsError::UnexpectedEof);
+                let version = data[pos];
+                pos += 1;
+
+                let daa_score =
+                    u64::from_le_bytes(data[pos..pos + 8].try_into().map_err(|_| {
+                        KtcsError::InvalidData("Invalid daa_score bytes".to_string())
+                    })?);
+                pos += 8;
+
+                let blue_score =
+                    u64::from_le_bytes(data[pos..pos + 8].try_into().map_err(|_| {
+                        KtcsError::InvalidData("Invalid blue_score bytes".to_string())
+                    })?);
+                pos += 8;
+
+                let mut block_hash = [0u8; 32];
+                block_hash.copy_from_slice(&data[pos..pos + 32]);
+                pos += 32;
+
+                let timestamp =
+                    u64::from_le_bytes(data[pos..pos + 8].try_into().map_err(|_| {
+                        KtcsError::InvalidData("Invalid timestamp bytes".to_string())
+                    })?);
+                pos += 8;
+
+                let mut tx_hash = [0u8; 32];
+                tx_hash.copy_from_slice(&data[pos..pos + 32]);
+                pos += 32;
+
+                let tx_index =
+                    u32::from_le_bytes(data[pos..pos + 4].try_into().map_err(|_| {
+                        KtcsError::InvalidData("Invalid tx_index bytes".to_string())
+                    })?);
+                pos += 4;
+
+                let mut blue_work = [0u8; 32];
+                blue_work.copy_from_slice(&data[pos..pos + 32]);
+                pos += 32;
+
+                let (parent_count, new_pos) = decode_varint(data, pos)?;
+                pos = new_pos;
+
+                // Security: Prevent DoS via excessive allocation
+                if parent_count > MAX_PARENT_HASHES {
+                    return Err(KtcsError::InvalidData(format!(
+                        "Parent count {} exceeds maximum {}",
+                        parent_count, MAX_PARENT_HASHES
+                    )));
+                }
+
+                let mut parent_hashes = Vec::with_capacity(parent_count as usize);
+                for _ in 0..parent_count {
+                    if data.len() < pos + 32 {
+                        return Err(KtcsError::UnexpectedEof);
+                    }
+                    let mut parent = [0u8; 32];
+                    parent.copy_from_slice(&data[pos..pos + 32]);
+                    parent_hashes.push(parent);
+                    pos += 32;
+                }
+
+                Attestation::Kaspa(KaspaAttestation {
+                    version,
+                    daa_score,
+                    blue_score,
+                    block_hash,
+                    timestamp,
+                    tx_hash,
+                    tx_index,
+                    blue_work,
+                    parent_hashes,
+                })
             }
-            let block_height = u32::from_le_bytes(
-                data[pos..pos + 4]
-                    .try_into()
-                    .map_err(|_| KtcsError::InvalidData("Invalid block_height bytes".to_string()))?
-            );
-            pos += 4;
-            Attestation::Bitcoin(BitcoinAttestation { block_height })
-        }
-    };
+            AttestationTag::Bitcoin => {
+                if data.len() < pos + 4 {
+                    return Err(KtcsError::UnexpectedEof);
+                }
+                let block_height =
+                    u32::from_le_bytes(data[pos..pos + 4].try_into().map_err(|_| {
+                        KtcsError::InvalidData("Invalid block_height bytes".to_string())
+                    })?);
+                pos += 4;
+                Attestation::Bitcoin(BitcoinAttestation { block_height })
+            }
+        };
 
     Ok((attestation, pos))
 }

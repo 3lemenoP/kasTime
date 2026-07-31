@@ -2,10 +2,10 @@
 //!
 //! Run with: cargo test --package ktcs-core --test testnet_alt_endpoints --features kaspa-client -- --nocapture
 
+use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
-use futures_util::{SinkExt, StreamExt};
 
 /// Test all known resolver domains for testnet-10
 #[tokio::test]
@@ -81,10 +81,7 @@ async fn test_uid_routing() {
         "86ea7de5c88424dd", // online
     ];
 
-    let domains = vec![
-        "pnn.kaspa.stream",
-        "kaspa.stream",
-    ];
+    let domains = vec!["pnn.kaspa.stream", "kaspa.stream"];
 
     for domain in &domains {
         for uid in &uids {
@@ -135,7 +132,11 @@ async fn test_explorer_api() {
 
     // Try explorer API
     print!("Testing https://explorer-tn10.kaspa.org/api/info ... ");
-    match client.get("https://explorer-tn10.kaspa.org/api/info").send().await {
+    match client
+        .get("https://explorer-tn10.kaspa.org/api/info")
+        .send()
+        .await
+    {
         Ok(resp) => {
             if resp.status().is_success() {
                 let text = resp.text().await.unwrap_or_default();
@@ -152,7 +153,11 @@ async fn test_explorer_api() {
     print!("Testing https://api-tn10.kaspa.org/ ... ");
     match client.get("https://api-tn10.kaspa.org/").send().await {
         Ok(resp) => {
-            println!("Status: {} ({})", resp.status(), resp.content_length().unwrap_or(0));
+            println!(
+                "Status: {} ({})",
+                resp.status(),
+                resp.content_length().unwrap_or(0)
+            );
         }
         Err(e) => {
             let err = e.to_string();
@@ -183,10 +188,7 @@ async fn test_working_rpc() {
     for (url, name) in endpoints {
         println!("\n--- Testing {} ({}) ---", name, url);
 
-        let ws_result = tokio::time::timeout(
-            Duration::from_secs(10),
-            connect_async(url)
-        ).await;
+        let ws_result = tokio::time::timeout(Duration::from_secs(10), connect_async(url)).await;
 
         let mut ws = match ws_result {
             Ok(Ok((ws, _))) => {
@@ -194,7 +196,10 @@ async fn test_working_rpc() {
                 ws
             }
             Ok(Err(e)) => {
-                println!("  ✗ Connection failed: {}", &e.to_string()[..e.to_string().len().min(50)]);
+                println!(
+                    "  ✗ Connection failed: {}",
+                    &e.to_string()[..e.to_string().len().min(50)]
+                );
                 continue;
             }
             Err(_) => {
@@ -228,14 +233,20 @@ async fn test_working_rpc() {
                             }
                         }
                     } else if let Some(result) = json.get("result") {
-                        println!("  ✓ Got result: {}", &result.to_string()[..result.to_string().len().min(80)]);
+                        println!(
+                            "  ✓ Got result: {}",
+                            &result.to_string()[..result.to_string().len().min(80)]
+                        );
                     } else {
                         println!("  ? Response: {}", &text[..text.len().min(100)]);
                     }
                 }
             }
             Ok(Some(Ok(Message::Binary(data)))) => {
-                println!("  ✗ Binary response ({} bytes) - wrong encoding?", data.len());
+                println!(
+                    "  ✗ Binary response ({} bytes) - wrong encoding?",
+                    data.len()
+                );
             }
             Ok(Some(Err(e))) => {
                 println!("  ✗ WebSocket error: {}", e);

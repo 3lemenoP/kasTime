@@ -191,8 +191,7 @@ impl Database {
                 }
 
                 let status_str: String = row.get("status");
-                let status = DbStampStatus::from_str(&status_str)
-                    .unwrap_or(DbStampStatus::Pending);
+                let status = DbStampStatus::from_str(&status_str).unwrap_or(DbStampStatus::Pending);
 
                 Ok(Some(DbStampRecord {
                     id: row.get("id"),
@@ -302,8 +301,7 @@ impl Database {
             }
 
             let status_str: String = row.get("status");
-            let status = DbStampStatus::from_str(&status_str)
-                .unwrap_or(DbStampStatus::Pending);
+            let status = DbStampStatus::from_str(&status_str).unwrap_or(DbStampStatus::Pending);
 
             records.push(DbStampRecord {
                 id: row.get("id"),
@@ -429,7 +427,10 @@ mod tests {
 
         // Single atomic write flips status, proof and confirmed_at together.
         let proof = vec![1u8, 2, 3, 4, 5];
-        let updated = db.confirm_stamp("atomic_1", &proof, 1234567999).await.unwrap();
+        let updated = db
+            .confirm_stamp("atomic_1", &proof, 1234567999)
+            .await
+            .unwrap();
         assert!(updated);
 
         let got = db.get_stamp("atomic_1").await.unwrap().unwrap();
@@ -469,7 +470,10 @@ mod tests {
         .await
         .unwrap();
 
-        let pending = db.get_stamps_by_status(DbStampStatus::Pending).await.unwrap();
+        let pending = db
+            .get_stamps_by_status(DbStampStatus::Pending)
+            .await
+            .unwrap();
         assert_eq!(pending.len(), 3);
         assert!(pending.iter().all(|r| r.status == DbStampStatus::Pending));
     }

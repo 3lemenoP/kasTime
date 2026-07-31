@@ -17,4 +17,5 @@ pub fn temp_file_with_content(content: &str) -> NamedTempFile {
 
 /// Known SHA256 hash of "test content\n"
 pub const TEST_CONTENT: &str = "test content\n";
-pub const TEST_CONTENT_HASH: &str = "a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae";
+pub const TEST_CONTENT_HASH: &str =
+    "a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae";

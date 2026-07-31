@@ -7,16 +7,16 @@
 //! - Retrieving block information for attestations
 //! - Managing the calendar wallet
 
-use ktcs_core::{
-    BlockInfo, DagInfo, KaspaClient, KaspaClientConfig, TransactionBuilder,
-    Utxo, format_blue_work, subtract_blue_work, sign_transaction,
-};
 use ktcs_core::wallet::KaspaWallet;
-use secrecy::{Secret, ExposeSecret};
+use ktcs_core::{
+    format_blue_work, sign_transaction, subtract_blue_work, BlockInfo, DagInfo, KaspaClient,
+    KaspaClientConfig, TransactionBuilder, Utxo,
+};
+use secrecy::{ExposeSecret, Secret};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{info, warn, error, debug};
+use tracing::{debug, error, info, warn};
 
 /// Result type for Kaspa service operations
 pub type Result<T> = std::result::Result<T, KaspaServiceError>;
@@ -97,7 +97,6 @@ pub struct KaspaServiceConfig {
     pub mock_mode: bool,
 
     // --- Dual-Wallet Recycling Configuration ---
-
     /// Return wallet private key (hex-encoded, 64 chars)
     /// When set, change from STAMP transactions goes here and is automatically
     /// recycled back to STAMP wallet.
@@ -135,63 +134,73 @@ impl KaspaServiceConfig {
     pub fn validate(&self) -> Result<()> {
         // Validate RPC URL format
         if !self.rpc_url.starts_with("ws://") && !self.rpc_url.starts_with("wss://") {
-            return Err(KaspaServiceError::InvalidConfig(
-                format!("Invalid RPC URL '{}': must start with ws:// or wss://", self.rpc_url)
-            ));
+            return Err(KaspaServiceError::InvalidConfig(format!(
+                "Invalid RPC URL '{}': must start with ws:// or wss://",
+                self.rpc_url
+            )));
         }
 
         // Validate network name
         let valid_networks = ["mainnet", "testnet-10", "testnet-11", "simnet", "devnet"];
         if !valid_networks.contains(&self.network.as_str()) {
-            return Err(KaspaServiceError::InvalidConfig(
-                format!("Invalid network '{}': must be one of {:?}", self.network, valid_networks)
-            ));
+            return Err(KaspaServiceError::InvalidConfig(format!(
+                "Invalid network '{}': must be one of {:?}",
+                self.network, valid_networks
+            )));
         }
 
         // Validate wallet address if provided (must be kaspa: or kaspatest: prefix)
         if !self.wallet_address.is_empty() {
-            if !self.wallet_address.starts_with("kaspa:") && !self.wallet_address.starts_with("kaspatest:") {
-                return Err(KaspaServiceError::InvalidConfig(
-                    format!("Invalid wallet address '{}': must start with 'kaspa:' or 'kaspatest:'", self.wallet_address)
-                ));
+            if !self.wallet_address.starts_with("kaspa:")
+                && !self.wallet_address.starts_with("kaspatest:")
+            {
+                return Err(KaspaServiceError::InvalidConfig(format!(
+                    "Invalid wallet address '{}': must start with 'kaspa:' or 'kaspatest:'",
+                    self.wallet_address
+                )));
             }
             // Basic length check (bech32m addresses are typically 61-63 chars)
             if self.wallet_address.len() < 60 || self.wallet_address.len() > 70 {
-                return Err(KaspaServiceError::InvalidConfig(
-                    format!("Invalid wallet address length: expected 60-70 chars, got {}", self.wallet_address.len())
-                ));
+                return Err(KaspaServiceError::InvalidConfig(format!(
+                    "Invalid wallet address length: expected 60-70 chars, got {}",
+                    self.wallet_address.len()
+                )));
             }
         }
 
         // Validate confirmation timeout (must be reasonable: 10s to 10min)
         if self.confirmation_timeout_ms < 10_000 {
-            return Err(KaspaServiceError::InvalidConfig(
-                format!("Confirmation timeout {}ms is too short (minimum 10000ms)", self.confirmation_timeout_ms)
-            ));
+            return Err(KaspaServiceError::InvalidConfig(format!(
+                "Confirmation timeout {}ms is too short (minimum 10000ms)",
+                self.confirmation_timeout_ms
+            )));
         }
         if self.confirmation_timeout_ms > 600_000 {
-            return Err(KaspaServiceError::InvalidConfig(
-                format!("Confirmation timeout {}ms is too long (maximum 600000ms)", self.confirmation_timeout_ms)
-            ));
+            return Err(KaspaServiceError::InvalidConfig(format!(
+                "Confirmation timeout {}ms is too long (maximum 600000ms)",
+                self.confirmation_timeout_ms
+            )));
         }
 
         // Validate fee rate (must be positive and reasonable)
         if self.fee_per_gram == 0 {
             return Err(KaspaServiceError::InvalidConfig(
-                "Fee per gram must be greater than 0".to_string()
+                "Fee per gram must be greater than 0".to_string(),
             ));
         }
         if self.fee_per_gram > 10_000 {
-            return Err(KaspaServiceError::InvalidConfig(
-                format!("Fee per gram {} seems too high (maximum 10000)", self.fee_per_gram)
-            ));
+            return Err(KaspaServiceError::InvalidConfig(format!(
+                "Fee per gram {} seems too high (maximum 10000)",
+                self.fee_per_gram
+            )));
         }
 
         // CRITICAL: Require wallet key when mock mode is disabled
         if !self.mock_mode && self.wallet_key.is_none() {
             return Err(KaspaServiceError::InvalidConfig(
                 "CALENDAR_WALLET_KEY is required when KTCS_MOCK_MODE is false. \
-                 Set KTCS_MOCK_MODE=true for testing without a wallet, or provide a wallet key.".to_string()
+                 Set KTCS_MOCK_MODE=true for testing without a wallet, or provide a wallet key."
+                    .to_string(),
             ));
         }
 
@@ -199,13 +208,14 @@ impl KaspaServiceConfig {
         if let Some(ref key) = self.wallet_key {
             let key_str = key.expose_secret();
             if key_str.len() != 64 {
-                return Err(KaspaServiceError::InvalidConfig(
-                    format!("CALENDAR_WALLET_KEY must be 64 hex characters (32 bytes), got {} chars", key_str.len())
-                ));
+                return Err(KaspaServiceError::InvalidConfig(format!(
+                    "CALENDAR_WALLET_KEY must be 64 hex characters (32 bytes), got {} chars",
+                    key_str.len()
+                )));
             }
             if hex::decode(key_str).is_err() {
                 return Err(KaspaServiceError::InvalidConfig(
-                    "CALENDAR_WALLET_KEY is not valid hex".to_string()
+                    "CALENDAR_WALLET_KEY is not valid hex".to_string(),
                 ));
             }
         }
@@ -214,20 +224,21 @@ impl KaspaServiceConfig {
         if let Some(ref key) = self.return_wallet_key {
             let key_str = key.expose_secret();
             if key_str.len() != 64 {
-                return Err(KaspaServiceError::InvalidConfig(
-                    format!("RETURN_WALLET_KEY must be 64 hex characters (32 bytes), got {} chars", key_str.len())
-                ));
+                return Err(KaspaServiceError::InvalidConfig(format!(
+                    "RETURN_WALLET_KEY must be 64 hex characters (32 bytes), got {} chars",
+                    key_str.len()
+                )));
             }
             if hex::decode(key_str).is_err() {
                 return Err(KaspaServiceError::InvalidConfig(
-                    "RETURN_WALLET_KEY is not valid hex".to_string()
+                    "RETURN_WALLET_KEY is not valid hex".to_string(),
                 ));
             }
             // Ensure RETURN wallet is different from STAMP wallet
             if let Some(ref stamp_key) = self.wallet_key {
                 if key_str == stamp_key.expose_secret() {
                     return Err(KaspaServiceError::InvalidConfig(
-                        "RETURN_WALLET_KEY must be different from CALENDAR_WALLET_KEY".to_string()
+                        "RETURN_WALLET_KEY must be different from CALENDAR_WALLET_KEY".to_string(),
                     ));
                 }
             }
@@ -252,7 +263,8 @@ impl KaspaServiceConfig {
             if is_production {
                 return Err(KaspaServiceError::InvalidConfig(
                     "SECURITY ERROR: Mock mode cannot be enabled in production environment. \
-                     Set KTCS_ENVIRONMENT to 'development' or 'testing' to use mock mode.".to_string()
+                     Set KTCS_ENVIRONMENT to 'development' or 'testing' to use mock mode."
+                        .to_string(),
                 ));
             }
 
@@ -260,7 +272,8 @@ impl KaspaServiceConfig {
             if self.network == "mainnet" {
                 return Err(KaspaServiceError::InvalidConfig(
                     "SECURITY ERROR: Mock mode cannot be used with mainnet. \
-                     Use a testnet for testing purposes.".to_string()
+                     Use a testnet for testing purposes."
+                        .to_string(),
                 ));
             }
 
@@ -381,7 +394,6 @@ pub struct KaspaService {
     connected: Arc<RwLock<bool>>,
 
     // --- Dual-Wallet Recycling ---
-
     /// Return wallet for receiving change (None if not configured)
     return_wallet: Option<KaspaWallet>,
     /// Cached UTXOs for the RETURN wallet
@@ -404,9 +416,12 @@ impl KaspaService {
         // Initialize wallet if key is provided
         let wallet = if let Some(ref key_secret) = config.wallet_key {
             let wallet = KaspaWallet::from_hex(key_secret.expose_secret(), &config.network)
-                .map_err(|e| KaspaServiceError::InvalidConfig(
-                    format!("Failed to load wallet from CALENDAR_WALLET_KEY: {}", e)
-                ))?;
+                .map_err(|e| {
+                    KaspaServiceError::InvalidConfig(format!(
+                        "Failed to load wallet from CALENDAR_WALLET_KEY: {}",
+                        e
+                    ))
+                })?;
 
             info!("Calendar wallet initialized: {}", wallet.address());
 
@@ -428,16 +443,21 @@ impl KaspaService {
         };
 
         // Get wallet address (from wallet or config)
-        let wallet_address = wallet.as_ref()
+        let wallet_address = wallet
+            .as_ref()
             .map(|w| w.address().to_string())
             .unwrap_or_else(|| config.wallet_address.clone());
 
         // Initialize return wallet if key is provided (dual-wallet recycling)
         let return_wallet = if let Some(ref key_secret) = config.return_wallet_key {
-            let rw = KaspaWallet::from_hex(key_secret.expose_secret(), &config.network)
-                .map_err(|e| KaspaServiceError::InvalidConfig(
-                    format!("Failed to load return wallet from RETURN_WALLET_KEY: {}", e)
-                ))?;
+            let rw = KaspaWallet::from_hex(key_secret.expose_secret(), &config.network).map_err(
+                |e| {
+                    KaspaServiceError::InvalidConfig(format!(
+                        "Failed to load return wallet from RETURN_WALLET_KEY: {}",
+                        e
+                    ))
+                },
+            )?;
 
             info!("Return wallet initialized: {}", rw.address());
 
@@ -499,10 +519,13 @@ impl KaspaService {
             5,
             1000, // start with 1 second delay
             || async {
-                self.client.connect().await
+                self.client
+                    .connect()
+                    .await
                     .map_err(|e| KaspaServiceError::ConnectionFailed(e.to_string()))
-            }
-        ).await;
+            },
+        )
+        .await;
 
         match connect_result {
             Ok(()) => {
@@ -561,7 +584,11 @@ impl KaspaService {
             return Ok(());
         }
 
-        match self.client.get_utxos_by_address(&self.config.wallet_address).await {
+        match self
+            .client
+            .get_utxos_by_address(&self.config.wallet_address)
+            .await
+        {
             Ok(utxos) => {
                 let total: u64 = utxos.iter().map(|u| u.amount).sum();
                 info!(
@@ -624,7 +651,9 @@ impl KaspaService {
 
         // Require real connection when mock mode is disabled
         if !self.is_connected().await {
-            error!("Cannot submit commitment: not connected to Kaspa node and mock mode is disabled");
+            error!(
+                "Cannot submit commitment: not connected to Kaspa node and mock mode is disabled"
+            );
             return Err(KaspaServiceError::NotConnected);
         }
 
@@ -653,38 +682,50 @@ impl KaspaService {
             "Built transaction: fee={} sompi, change={} sompi → {}",
             tx.fee,
             tx.change_amount,
-            if self.is_recycling_enabled() { "RETURN wallet" } else { "self" }
+            if self.is_recycling_enabled() {
+                "RETURN wallet"
+            } else {
+                "self"
+            }
         );
 
         // Get wallet for signing
-        let wallet = self.wallet.as_ref()
-            .ok_or_else(|| KaspaServiceError::InvalidConfig(
-                "Cannot submit real transaction: no wallet configured. Set CALENDAR_WALLET_KEY.".to_string()
-            ))?;
+        let wallet = self.wallet.as_ref().ok_or_else(|| {
+            KaspaServiceError::InvalidConfig(
+                "Cannot submit real transaction: no wallet configured. Set CALENDAR_WALLET_KEY."
+                    .to_string(),
+            )
+        })?;
 
         // Sign the transaction
         let unsigned_tx = tx.transaction;
-        let signed_tx = sign_transaction(&unsigned_tx, wallet, &utxos)
-            .map_err(|e| KaspaServiceError::SubmissionFailed(
-                format!("Transaction signing failed: {}", e)
-            ))?;
+        let signed_tx = sign_transaction(&unsigned_tx, wallet, &utxos).map_err(|e| {
+            KaspaServiceError::SubmissionFailed(format!("Transaction signing failed: {}", e))
+        })?;
 
         debug!(
             "Transaction signed: {} inputs, signature lengths: {:?}",
             signed_tx.inputs.len(),
-            signed_tx.inputs.iter().map(|i| i.signature_script.len()).collect::<Vec<_>>()
+            signed_tx
+                .inputs
+                .iter()
+                .map(|i| i.signature_script.len())
+                .collect::<Vec<_>>()
         );
 
         // Submit signed transaction with retry logic for transient failures
         let tx_hash = Self::retry_with_backoff(
             "Transaction submission",
-            3,  // max 3 retries
+            3,   // max 3 retries
             500, // start with 500ms delay
             || async {
-                self.client.submit_transaction(signed_tx.clone()).await
+                self.client
+                    .submit_transaction(signed_tx.clone())
+                    .await
                     .map_err(|e| KaspaServiceError::SubmissionFailed(e.to_string()))
-            }
-        ).await?;
+            },
+        )
+        .await?;
 
         info!("Transaction submitted: {}", hex::encode(tx_hash));
         debug!("Transaction hash: {}", hex::encode(tx_hash));
@@ -813,7 +854,9 @@ impl KaspaService {
             return Err(KaspaServiceError::NotConnected);
         }
 
-        self.client.get_block_by_hash(hash).await
+        self.client
+            .get_block_by_hash(hash)
+            .await
             .map_err(|e| KaspaServiceError::BlockNotFound(e.to_string()))
     }
 
@@ -833,7 +876,8 @@ impl KaspaService {
         attestation_daa_score: u64,
     ) -> Result<ThermodynamicMetrics> {
         // Try to get current chain state
-        let (current_daa, current_blue_work) = if let Some(dag_info) = &*self.dag_info.read().await {
+        let (current_daa, current_blue_work) = if let Some(dag_info) = &*self.dag_info.read().await
+        {
             (dag_info.current_daa_score, dag_info.current_blue_work)
         } else {
             // If not connected, return partial metrics
@@ -905,7 +949,11 @@ impl KaspaService {
             return Err(KaspaServiceError::NotConnected);
         }
 
-        match self.client.get_utxos_by_address(return_wallet.address()).await {
+        match self
+            .client
+            .get_utxos_by_address(return_wallet.address())
+            .await
+        {
             Ok(utxos) => {
                 let total: u64 = utxos.iter().map(|u| u.amount).sum();
                 debug!(
@@ -927,7 +975,12 @@ impl KaspaService {
 
     /// Get total balance of return wallet
     pub async fn return_wallet_balance(&self) -> u64 {
-        self.return_utxos.read().await.iter().map(|u| u.amount).sum()
+        self.return_utxos
+            .read()
+            .await
+            .iter()
+            .map(|u| u.amount)
+            .sum()
     }
 
     /// Retry an async operation with exponential backoff
