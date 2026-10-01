@@ -1,0 +1,32 @@
+[package]
+name = "ktcs-upstream-compat"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Checks kasTime (ktcs-core / ktcs-wasm) against upstream rusty-kaspa consensus, mempool and RPC types"
+
+# Standalone: intentionally NOT a member of the kasTime workspace, so it never affects CI or Docker builds.
+[workspace]
+
+[dependencies]
+# kasTime under test
+ktcs-core = { path = "../../ktcs-core", features = ["kaspa-client"] }
+ktcs-wasm = { path = "../../ktcs-wasm", default-features = false }
+
+# Upstream rusty-kaspa, pinned to the release this review was written against
+kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.1.0" }
+kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.1.0" }
+kaspa-rpc-core = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.1.0" }
+kaspa-addresses = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.1.0" }
+kaspa-hashes = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.1.0" }
+kaspa-math = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.1.0" }
+kaspa-mining-errors = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.1.0" }
+
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+serde_json = "1"
+hex = "0.4"
+
+[profile.dev]
+opt-level = 1
